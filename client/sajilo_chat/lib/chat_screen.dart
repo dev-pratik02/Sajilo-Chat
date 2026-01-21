@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io'; // NEW: Added for File class
+import 'package:file_picker/file_picker.dart'; // NEW: Added for file picker
 import 'package:sajilo_chat/utilities.dart';
 import 'message_bubble.dart';
+import 'file_transfer_handler.dart'; // NEW: Added file transfer handler
 
 class ChatScreen extends StatefulWidget {
   final SocketWrapper socket;
@@ -26,16 +29,59 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<Map<String, dynamic>> _messages = [];
   StreamSubscription? _socketSubscription;
   String _buffer = '';
+  
+  // NEW: File transfer state variables
+  late FileTransferHandler _fileHandler;
+  double _fileTransferProgress = 0.0;
+  bool _showFileProgress = false;
+  String _transferFileName = '';
 
   @override
   void initState() {
     super.initState();
+    
+    // NEW: Initialize file transfer handler
+    _fileHandler = FileTransferHandler(
+      onProgress: (progress) {
+        setState(() {
+          _fileTransferProgress = progress;
+          _showFileProgress = true;
+        });
+      },
+      onComplete: (fileName) {
+        setState(() {
+          _showFileProgress = false;
+          _messages.add({
+            'from': 'System',
+            'message': 'File received: $fileName',
+            'isMe': false,
+            'isFile': true,
+            'fileName': fileName,
+          });
+        });
+        _scrollToBottom();
+      },
+      onError: (error) {
+        setState(() => _showFileProgress = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('File transfer error: $error')),
+        );
+      },
+    );
+    
     _setupListener();
   }
 
   void _setupListener() {
     _socketSubscription = widget.socket.stream.listen(
       (data) {
+        // CRITICAL: Check if in file transfer mode
+        if (_fileHandler.isReceivingFile) {
+          _fileHandler.handleIncomingChunk(data);
+          return; // Don't try to parse as JSON!
+        }
+        
+        // Normal JSON message handling
         _buffer += utf8.decode(data);
         
         while (_buffer.contains('\n')) {
@@ -49,7 +95,17 @@ class _ChatScreenState extends State<ChatScreen> {
             final jsonData = jsonDecode(message);
             final type = jsonData['type'];
 
-            if (type == 'group' && widget.chatWith == 'group') {
+            // NEW: Handle file transfer start
+            if (type == 'file_transfer_start') {
+              setState(() => _transferFileName = jsonData['file_name']);
+              _fileHandler.handleTransferStart(jsonData);
+            } 
+            // NEW: Handle file transfer end
+            else if (type == 'file_transfer_end') {
+              _fileHandler.handleTransferEnd(jsonData);
+            }
+            // EXISTING: Group message handler
+            else if (type == 'group' && widget.chatWith == 'group') {
               setState(() {
                 _messages.add({
                   'from': jsonData['from'],
@@ -59,7 +115,9 @@ class _ChatScreenState extends State<ChatScreen> {
               });
               _scrollToBottom();
               
-            } else if (type == 'dm') {
+            } 
+            // EXISTING: Direct message handler
+            else if (type == 'dm') {
               final from = jsonData['from'];
               final to = jsonData['to'];
 
@@ -85,11 +143,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scrollToBottom() {
-    Future.delayed(Duration(milliseconds: 100), () {
+    Future.delayed(const Duration(milliseconds: 100), () {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: Duration(milliseconds: 300),
+          duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
       }
@@ -114,12 +172,87 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket.write(utf8.encode(msg));
     _messageController.clear();
   }
+  
+  // NEW: File picker and send method
+  Future<void> _pickAndSendFile() async {
+    // Only allow in DMs
+    if (widget.chatWith == 'group') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('File sharing only available in direct messages')),
+      );
+      return;
+    }
+    
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles();
+      
+      if (result != null) {
+        final file = File(result.files.single.path!);
+        final fileSize = await file.length();
+        final fileName = result.files.single.name;
+        
+        // Size limit check (50MB)
+        if (fileSize > 50 * 1024 * 1024) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('File too large (max 50MB)')),
+          );
+          return;
+        }
+        
+        // Confirmation dialog
+        if (!mounted) return;
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Send File?'),
+            content: Text(
+              'Send "$fileName" (${(fileSize / 1024).toStringAsFixed(1)} KB) to ${widget.chatWith}?\n\n'
+              'Note: Recipient must be online.'
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Send'),
+              ),
+            ],
+          ),
+        );
+        
+        if (confirmed == true) {
+          setState(() {
+            _transferFileName = fileName;
+            _showFileProgress = true;
+            _fileTransferProgress = 0.0;
+          });
+          
+          await _fileHandler.sendFile(
+            file: file,
+            socket: widget.socket.socket, // Access underlying socket
+            senderUsername: widget.username,
+            recipientUsername: widget.chatWith,
+          );
+        }
+      }
+    } catch (e) {
+      print('[FILE_PICKER] Error: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error picking file: $e')),
+      );
+    }
+  }
 
   @override
   void dispose() {
     _socketSubscription?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
+    _fileHandler.dispose(); // NEW: Dispose file handler
     super.dispose();
   }
 
@@ -127,9 +260,9 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Color(0xFF075E54),
+        backgroundColor: const Color(0xFF075E54),
         leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: Colors.white),
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(
@@ -138,24 +271,58 @@ class _ChatScreenState extends State<ChatScreen> {
               radius: 20,
               backgroundColor: Colors.white,
               child: widget.chatWith == 'group'
-                  ? Icon(Icons.group, color: Color(0xFF075E54))
+                  ? const Icon(Icons.group, color: Color(0xFF075E54))
                   : Text(
                       widget.chatWith[0].toUpperCase(),
-                      style: TextStyle(color: Color(0xFF075E54)),
+                      style: const TextStyle(color: Color(0xFF075E54)),
                     ),
             ),
-            SizedBox(width: 12),
+            const SizedBox(width: 12),
             Text(
               widget.chatWith == 'group' ? 'Group Chat' : widget.chatWith,
-              style: TextStyle(color: Colors.white),
+              style: const TextStyle(color: Colors.white),
             ),
           ],
         ),
       ),
       body: Container(
-        color: Color(0xFFECE5DD),
+        color: const Color(0xFFECE5DD),
         child: Column(
           children: [
+            // NEW: File transfer progress indicator
+            if (_showFileProgress)
+              Container(
+                padding: const EdgeInsets.all(12),
+                color: Colors.blue[50],
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.file_upload, size: 20, color: Colors.blue),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _transferFileName,
+                            style: const TextStyle(fontSize: 14),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        Text(
+                          '${(_fileTransferProgress * 100).toStringAsFixed(0)}%',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(value: _fileTransferProgress),
+                  ],
+                ),
+              ),
+            
+            // EXISTING: Messages list
             Expanded(
               child: _messages.isEmpty
                   ? Center(
@@ -167,7 +334,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             size: 80,
                             color: Colors.grey[400],
                           ),
-                          SizedBox(height: 16),
+                          const SizedBox(height: 16),
                           Text(
                             'No messages yet',
                             style: TextStyle(
@@ -175,7 +342,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               color: Colors.grey[600],
                             ),
                           ),
-                          SizedBox(height: 8),
+                          const SizedBox(height: 8),
                           Text(
                             'Start the conversation!',
                             style: TextStyle(
@@ -188,7 +355,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     )
                   : ListView.builder(
                       controller: _scrollController,
-                      padding: EdgeInsets.all(8),
+                      padding: const EdgeInsets.all(8),
                       itemCount: _messages.length,
                       itemBuilder: (context, index) {
                         final msg = _messages[index];
@@ -197,15 +364,27 @@ class _ChatScreenState extends State<ChatScreen> {
                           isMe: msg['isMe'],
                           sender: msg['from'],
                           showSender: widget.chatWith == 'group' && !msg['isMe'],
+                          isFile: msg['isFile'] ?? false, // NEW: Pass file flag
+                          fileName: msg['fileName'], // NEW: Pass file name
                         );
                       },
                     ),
             ),
+            
+            // EXISTING + NEW: Input bar with file button
             Container(
-              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
               color: Colors.white,
               child: Row(
                 children: [
+                  // NEW: File attachment button
+                  IconButton(
+                    icon: const Icon(Icons.attach_file, color: Color(0xFF075E54)),
+                    onPressed: _pickAndSendFile,
+                    tooltip: 'Send file',
+                  ),
+                  
+                  // EXISTING: Message text field
                   Expanded(
                     child: TextField(
                       controller: _messageController,
@@ -214,7 +393,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(25),
                         ),
-                        contentPadding: EdgeInsets.symmetric(
+                        contentPadding: const EdgeInsets.symmetric(
                           horizontal: 16,
                           vertical: 10,
                         ),
@@ -222,11 +401,13 @@ class _ChatScreenState extends State<ChatScreen> {
                       onSubmitted: (_) => _sendMessage(),
                     ),
                   ),
-                  SizedBox(width: 8),
+                  
+                  // EXISTING: Send button
+                  const SizedBox(width: 8),
                   CircleAvatar(
-                    backgroundColor: Color(0xFF25D366),
+                    backgroundColor: const Color(0xFF25D366),
                     child: IconButton(
-                      icon: Icon(Icons.send, color: Colors.white, size: 20),
+                      icon: const Icon(Icons.send, color: Colors.white, size: 20),
                       onPressed: _sendMessage,
                     ),
                   ),

@@ -19,7 +19,7 @@ class _LoginPageState extends State<LoginPage> {
 
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _serverController = TextEditingController(text: '192.168.0.100');
+  final _serverController = TextEditingController(text: '192.168.0.XXX');
   final _portController = TextEditingController(text: '5050');
 
   bool _isLoading = false;
