@@ -6,7 +6,7 @@ import jwt
 JWT_SECRET = "jwt-secret-change-me"
 JWT_ALGORITHM = "HS256"
 
-IP_address = socket.gethostbyname(socket.gethostname())
+IP_address = '0.0.0.0'
 Port = 5050
 BufferSize = 4096  # Increased buffer size
 
