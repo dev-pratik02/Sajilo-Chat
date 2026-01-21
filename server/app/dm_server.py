@@ -1,6 +1,10 @@
 import socket
 import threading
 import json
+import jwt
+
+JWT_SECRET = "jwt-secret-change-me"
+JWT_ALGORITHM = "HS256"
 
 IP_address = socket.gethostbyname(socket.gethostname())
 Port = 5050
@@ -10,7 +14,7 @@ server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
 try:
-    server_socket.bind((IP_address, Port))
+    server_socket.bind(("0.0.0.0", Port))
     server_socket.listen()
     print("=" * 60)
     print("         SAJILO CHAT SERVER")
@@ -163,9 +167,9 @@ def receive():
         try:
             client, address = server_socket.accept()
             print(f"\n[CONNECTION] New connection from {address[0]}:{address[1]}")
-            
-            # Send username request
-            json_msg = json.dumps({'type': 'request_username'}) + '\n'
+
+            # Handshake for username
+            json_msg = json.dumps({'type': 'request_auth'}) + '\n'
             client.send(json_msg.encode('utf-8'))
             print(f"[DEBUG] Sent username request")
             
@@ -188,15 +192,39 @@ def receive():
                 message = data.decode('utf-8').strip()
                 print(f"[DEBUG] Received: {message}")
                 
-                username_data = json.loads(message)
-                print(f"[DEBUG] Parsed: {username_data}")
-                
-                if isinstance(username_data, dict):
-                    username = username_data.get('username', '').strip()
-                else:
-                    print(f"[ERROR] Unexpected type: {type(username_data)}")
+                auth_data = json.loads(message)
+                token = auth_data.get("token")
+
+                if not token:
+                    client.send(json.dumps({
+                        "type": "error",
+                        "message": "Missing token"
+                    }).encode())
                     client.close()
                     continue
+
+                try:
+                    payload = jwt.decode(
+                        token,
+                        JWT_SECRET,
+                        algorithms=[JWT_ALGORITHM]
+                    )
+                    username = payload["sub"]  
+                except jwt.ExpiredSignatureError:
+                    client.send(json.dumps({
+                        "type": "error",
+                        "message": "Token expired"
+                    }).encode())
+                    client.close()
+                    continue
+                except jwt.InvalidTokenError:
+                    client.send(json.dumps({
+                        "type": "error",
+                        "message": "Invalid token"
+                    }).encode())
+                    client.close()
+                    continue
+
                 
                 if not username:
                     print(f"[ERROR] Empty username")
