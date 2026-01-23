@@ -1,23 +1,22 @@
 // ============================================================================
-// NEW FILE: lib/file_transfer_handler.dart
-// Handles TCP-based file streaming (no disk storage on server)
+// lib/file_transfer_handler.dart - UPDATED with file path tracking
 // ============================================================================
 
 import 'dart:io';
 import 'dart:convert';
-import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 class FileTransferHandler {
   final Function(double) onProgress;
-  final Function(String) onComplete;
+  final Function(String fileName, String filePath) onComplete; // CHANGED: Added filePath
   final Function(String) onError;
   
   // State for receiving files
   bool _isReceivingFile = false;
   Map<String, dynamic>? _currentTransferMetadata;
   IOSink? _fileSink;
+  String? _currentFilePath; // NEW: Track file path
   int _receivedBytes = 0;
   
   FileTransferHandler({
@@ -64,7 +63,7 @@ class FileTransferHandler {
       int bytesSent = 0;
       
       await for (final chunk in stream) {
-        socket.add(chunk); // Raw binary data
+        socket.add(chunk);
         bytesSent += chunk.length;
         onProgress(bytesSent / fileSize);
       }
@@ -82,7 +81,7 @@ class FileTransferHandler {
       await socket.flush();
       
       print('[FILE_SEND] ✓ Completed: $fileName ($bytesSent bytes)');
-      onComplete(fileName);
+      onComplete(fileName, ''); // Empty path for sender
       
     } catch (e) {
       print('[FILE_SEND] ✗ Error: $e');
@@ -110,9 +109,11 @@ class FileTransferHandler {
       
       _isReceivingFile = true;
       _currentTransferMetadata = metadata;
+      _currentFilePath = filePath; // NEW: Store file path
       _fileSink = file.openWrite();
       _receivedBytes = 0;
       
+      print('[FILE_RECV] Saving to: $filePath');
       onProgress(0.0);
       
     } catch (e) {
@@ -168,15 +169,19 @@ class FileTransferHandler {
     await _fileSink?.close();
     
     final fileName = _currentTransferMetadata?['file_name'] ?? 'unknown';
-    print('[FILE_RECV] ✓ Completed: $fileName ($_receivedBytes bytes)');
+    final filePath = _currentFilePath ?? '';
     
-    onComplete(fileName);
+    print('[FILE_RECV] ✓ Completed: $fileName ($_receivedBytes bytes)');
+    print('[FILE_RECV] Saved to: $filePath');
+    
+    onComplete(fileName, filePath); // CHANGED: Pass both fileName and filePath
     _resetReceiveState();
   }
   
   void _resetReceiveState() {
     _isReceivingFile = false;
     _currentTransferMetadata = null;
+    _currentFilePath = null; // NEW: Clear path
     _fileSink = null;
     _receivedBytes = 0;
   }

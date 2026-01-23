@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io'; // NEW: Added for File class
-import 'package:file_picker/file_picker.dart'; // NEW: Added for file picker
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:open_file/open_file.dart'; // NEW: Import open_file
 import 'package:sajilo_chat/utilities.dart';
 import 'message_bubble.dart';
-import 'file_transfer_handler.dart'; // NEW: Added file transfer handler
+import 'file_transfer_handler.dart';
 
 class ChatScreen extends StatefulWidget {
   final SocketWrapper socket;
@@ -30,7 +31,6 @@ class _ChatScreenState extends State<ChatScreen> {
   StreamSubscription? _socketSubscription;
   String _buffer = '';
   
-  // NEW: File transfer state variables
   late FileTransferHandler _fileHandler;
   double _fileTransferProgress = 0.0;
   bool _showFileProgress = false;
@@ -40,7 +40,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     
-    // NEW: Initialize file transfer handler
+    // UPDATED: Initialize with new callback signature
     _fileHandler = FileTransferHandler(
       onProgress: (progress) {
         setState(() {
@@ -48,7 +48,7 @@ class _ChatScreenState extends State<ChatScreen> {
           _showFileProgress = true;
         });
       },
-      onComplete: (fileName) {
+      onComplete: (fileName, filePath) { // CHANGED: Now receives both
         setState(() {
           _showFileProgress = false;
           _messages.add({
@@ -57,9 +57,24 @@ class _ChatScreenState extends State<ChatScreen> {
             'isMe': false,
             'isFile': true,
             'fileName': fileName,
+            'filePath': filePath, // NEW: Store file path
           });
         });
         _scrollToBottom();
+        
+        // NEW: Show snackbar with open button
+        if (filePath.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('File saved: $fileName'),
+              action: SnackBarAction(
+                label: 'OPEN',
+                onPressed: () => _openFile(filePath),
+              ),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
       },
       onError: (error) {
         setState(() => _showFileProgress = false);
@@ -75,13 +90,11 @@ class _ChatScreenState extends State<ChatScreen> {
   void _setupListener() {
     _socketSubscription = widget.socket.stream.listen(
       (data) {
-        // CRITICAL: Check if in file transfer mode
         if (_fileHandler.isReceivingFile) {
           _fileHandler.handleIncomingChunk(data);
-          return; // Don't try to parse as JSON!
+          return;
         }
         
-        // Normal JSON message handling
         _buffer += utf8.decode(data);
         
         while (_buffer.contains('\n')) {
@@ -95,16 +108,13 @@ class _ChatScreenState extends State<ChatScreen> {
             final jsonData = jsonDecode(message);
             final type = jsonData['type'];
 
-            // NEW: Handle file transfer start
             if (type == 'file_transfer_start') {
               setState(() => _transferFileName = jsonData['file_name']);
               _fileHandler.handleTransferStart(jsonData);
             } 
-            // NEW: Handle file transfer end
             else if (type == 'file_transfer_end') {
               _fileHandler.handleTransferEnd(jsonData);
             }
-            // EXISTING: Group message handler
             else if (type == 'group' && widget.chatWith == 'group') {
               setState(() {
                 _messages.add({
@@ -114,9 +124,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 });
               });
               _scrollToBottom();
-              
             } 
-            // EXISTING: Direct message handler
             else if (type == 'dm') {
               final from = jsonData['from'];
               final to = jsonData['to'];
@@ -173,9 +181,37 @@ class _ChatScreenState extends State<ChatScreen> {
     _messageController.clear();
   }
   
-  // NEW: File picker and send method
+  // NEW: Method to open files
+  Future<void> _openFile(String filePath) async {
+    try {
+      print('[OPEN_FILE] Attempting to open: $filePath');
+      final result = await OpenFile.open(filePath);
+      
+      if (result.type != ResultType.done) {
+        print('[OPEN_FILE] Error: ${result.message}');
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not open file: ${result.message}'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      } else {
+        print('[OPEN_FILE] ✓ File opened successfully');
+      }
+    } catch (e) {
+      print('[OPEN_FILE] Exception: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error opening file: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
   Future<void> _pickAndSendFile() async {
-    // Only allow in DMs
     if (widget.chatWith == 'group') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('File sharing only available in direct messages')),
@@ -191,7 +227,6 @@ class _ChatScreenState extends State<ChatScreen> {
         final fileSize = await file.length();
         final fileName = result.files.single.name;
         
-        // Size limit check (50MB)
         if (fileSize > 50 * 1024 * 1024) {
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
@@ -200,7 +235,6 @@ class _ChatScreenState extends State<ChatScreen> {
           return;
         }
         
-        // Confirmation dialog
         if (!mounted) return;
         final confirmed = await showDialog<bool>(
           context: context,
@@ -232,7 +266,7 @@ class _ChatScreenState extends State<ChatScreen> {
           
           await _fileHandler.sendFile(
             file: file,
-            socket: widget.socket.socket, // Access underlying socket
+            socket: widget.socket.socket,
             senderUsername: widget.username,
             recipientUsername: widget.chatWith,
           );
@@ -252,7 +286,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _socketSubscription?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
-    _fileHandler.dispose(); // NEW: Dispose file handler
+    _fileHandler.dispose();
     super.dispose();
   }
 
@@ -289,7 +323,6 @@ class _ChatScreenState extends State<ChatScreen> {
         color: const Color(0xFFECE5DD),
         child: Column(
           children: [
-            // NEW: File transfer progress indicator
             if (_showFileProgress)
               Container(
                 padding: const EdgeInsets.all(12),
@@ -322,7 +355,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             
-            // EXISTING: Messages list
             Expanded(
               child: _messages.isEmpty
                   ? Center(
@@ -364,27 +396,28 @@ class _ChatScreenState extends State<ChatScreen> {
                           isMe: msg['isMe'],
                           sender: msg['from'],
                           showSender: widget.chatWith == 'group' && !msg['isMe'],
-                          isFile: msg['isFile'] ?? false, // NEW: Pass file flag
-                          fileName: msg['fileName'], // NEW: Pass file name
+                          isFile: msg['isFile'] ?? false,
+                          fileName: msg['fileName'],
+                          filePath: msg['filePath'], // NEW: Pass file path
+                          onFileTap: msg['isFile'] == true && msg['filePath'] != null && msg['filePath'].toString().isNotEmpty
+                              ? () => _openFile(msg['filePath']) // NEW: Handle tap
+                              : null,
                         );
                       },
                     ),
             ),
             
-            // EXISTING + NEW: Input bar with file button
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
               color: Colors.white,
               child: Row(
                 children: [
-                  // NEW: File attachment button
                   IconButton(
                     icon: const Icon(Icons.attach_file, color: Color(0xFF075E54)),
                     onPressed: _pickAndSendFile,
                     tooltip: 'Send file',
                   ),
                   
-                  // EXISTING: Message text field
                   Expanded(
                     child: TextField(
                       controller: _messageController,
@@ -402,7 +435,6 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
                   
-                  // EXISTING: Send button
                   const SizedBox(width: 8),
                   CircleAvatar(
                     backgroundColor: const Color(0xFF25D366),

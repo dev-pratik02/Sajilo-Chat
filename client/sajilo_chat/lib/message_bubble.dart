@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 
-
 class MessageBubble extends StatelessWidget {
   final String message;
   final bool isMe;
   final String sender;
   final bool showSender;
-  final bool isFile; // NEW: Flag for file messages
-  final String? fileName; // NEW: File name for file messages
+  final bool isFile;
+  final String? fileName;
+  final String? filePath; // NEW: Add file path
+  final VoidCallback? onFileTap; // NEW: Add tap callback
 
   const MessageBubble({
     super.key, 
@@ -15,8 +16,10 @@ class MessageBubble extends StatelessWidget {
     required this.isMe,
     required this.sender,
     required this.showSender,
-    this.isFile = false, // NEW: Default to false
-    this.fileName, // NEW: Optional file name
+    this.isFile = false,
+    this.fileName,
+    this.filePath, // NEW
+    this.onFileTap, // NEW
   });
 
   @override
@@ -49,18 +52,6 @@ class MessageBubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (showSender)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 4),
-                child: Text(
-                  '',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                    color: Color(0xFF075E54),
-                  ),
-                ),
-              ),
-            if (showSender)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
@@ -73,26 +64,50 @@ class MessageBubble extends StatelessWidget {
                 ),
               ),
             
-            // NEW: File message styling
+            // NEW: File message with tap functionality
             if (isFile)
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.insert_drive_file, size: 20, color: Colors.blue),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(
-                      fileName ?? message,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        color: Colors.blue,
-                        decoration: TextDecoration.underline,
-                      ),
-                    ),
+              InkWell(
+                onTap: onFileTap,
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                ],
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.insert_drive_file, size: 24, color: Colors.blue),
+                      const SizedBox(width: 12),
+                      Flexible(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              fileName ?? message,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: Colors.blue,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Tap to open',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.download, size: 20, color: Colors.blue),
+                    ],
+                  ),
+                ),
               )
-            // EXISTING: Text message styling
             else
               Text(
                 message,
