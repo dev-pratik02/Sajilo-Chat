@@ -3,11 +3,9 @@ import 'package:sajilo_chat/login_page.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'package:sajilo_chat/utilities.dart';
+import 'package:sajilo_chat/chat_history_handler.dart'; // NEW: Import history handler
 import 'chat_screen.dart';
 
-// ============================================================================
-// CHAT LIST PAGE
-// ============================================================================
 class ChatsListPage extends StatefulWidget {
   final SocketWrapper socket;
   final String username;
@@ -29,25 +27,32 @@ class _ChatsListPageState extends State<ChatsListPage> {
   final Map<String, String> _lastMessages = {'group': 'No messages yet'};
   bool _isConnected = true;
   String _buffer = '';
+  
+  // NEW: Chat history handler
+  late ChatHistoryHandler _historyHandler;
 
   @override
-void initState() {
-  super.initState();
-  _setupSocketListener();
-  
-  // FIX: Request users after a brief delay to ensure the listener is active
-  Future.delayed(Duration(milliseconds: 500), () {
-    print('[ChatList] Requesting user list...');
+  void initState() {
+    super.initState();
     
-        final request = '${jsonEncode({
-       'type': 'request_users',
-  '     message': 'Requesting list'
-        })}\n';
+    // NEW: Initialize history handler
+    _historyHandler = ChatHistoryHandler(
+      socket: widget.socket,
+      username: widget.username,
+    );
+    
+    _setupSocketListener();
+    
+    Future.delayed(Duration(milliseconds: 500), () {
+      print('[ChatList] Requesting user list...');
+      final request = '${jsonEncode({
+        'type': 'request_users',
+        'message': 'Requesting list'
+      })}\n';
+      widget.socket.write(utf8.encode(request));
+    });
+  }
 
-  widget.socket.write(utf8.encode(request));
-    
-  });
-}
   void _setupSocketListener() {
     print('[ChatList] Setting up listener');
     
@@ -80,14 +85,10 @@ void initState() {
               final from = jsonData['from'];
               final msg = jsonData['message'];
 
-              
-
-
               setState(() {
                 _lastMessages['group'] = '$from: $msg';
                 _unreadCounts['group'] = (_unreadCounts['group'] ?? 0) + 1;
               });
-              
               
             } else if (type == 'dm') {
               final from = jsonData['from'];
@@ -150,6 +151,7 @@ void initState() {
           socket: widget.socket,
           username: widget.username,
           chatWith: chatWith,
+          historyHandler: _historyHandler, // NEW: Pass history handler
         ),
       ),
     ).then((_) {
@@ -273,9 +275,6 @@ void initState() {
   }
 }
 
-// ============================================================================
-// CHAT LIST TILE
-// ============================================================================
 class ChatListTile extends StatelessWidget {
   final String name;
   final String message;
@@ -285,7 +284,8 @@ class ChatListTile extends StatelessWidget {
   final bool isGroup;
   final VoidCallback onTap;
 
-  const ChatListTile({super.key, 
+  const ChatListTile({
+    super.key, 
     required this.name,
     required this.message,
     required this.time,

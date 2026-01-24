@@ -19,8 +19,16 @@ class SocketWrapper {
   
   Stream<List<int>> get stream => _controller.stream;
   
+  // NEW: Expose underlying socket for direct binary access
+  Socket get socket => _socket;
+  
   void write(List<int> data) {
     _socket.add(data);
+  }
+  
+  // NEW: Flush method for ensuring data is sent
+  Future<void> flush() async {
+    await _socket.flush();
   }
   
   void close() {
@@ -29,4 +37,3 @@ class SocketWrapper {
     _socket.close();
   }
 }
-
