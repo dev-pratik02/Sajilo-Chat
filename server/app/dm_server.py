@@ -2,6 +2,7 @@ import socket
 import threading
 import json
 import jwt
+from chat_history_manager import ChatHistoryManager
 
 JWT_SECRET = "jwt-secret-change-me"
 JWT_ALGORITHM = "HS256"
@@ -18,24 +19,26 @@ def get_lan_ip():
 
 IP_address = get_lan_ip()
 Port = 5050
-BufferSize = 4096  # Increased buffer size
+BufferSize = 4096
 
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+# Initialize chat history manager
+chat_history = ChatHistoryManager(db_api_url="http://localhost:5001/api")
 
 try:
     server_socket.bind(("0.0.0.0", Port))
     server_socket.listen()
     print("=" * 60)
-    print("         SAJILO CHAT SERVER")
+    print("         SAJILO CHAT SERVER (WITH HISTORY)")
     print("=" * 60)
     print(f"Server is listening on {IP_address}:{Port}")
-    print(f"Use 'localhost' or '{IP_address}' to connect")
+    print(f"Database API: {chat_history.db_api_url}")
     print("Waiting for connections...")
     print("=" * 60)
 except OSError as e:
     print(f"Error binding to port: {e}")
-    print("Try closing other instances or wait a minute")
     exit()
 
 clients = {}
@@ -84,7 +87,7 @@ def handle(client, username):
     """Handle messages from a client"""
     buffer = ""
     
-    # NEW: File transfer state tracking
+    # File transfer state tracking
     in_file_transfer = False
     file_metadata = None
     receiver_socket = None
@@ -97,19 +100,16 @@ def handle(client, username):
                 print(f"[INFO] {username} connection closed")
                 break
             
-            # NEWWWWW: Binary relay mode for file transfers
+            # Binary relay mode for file transfers
             if in_file_transfer:
                 try:
-                    # Forward raw bytes directly to receiver
                     receiver_socket.send(chunk)
                     bytes_relayed += len(chunk)
                     
-                    # Check if transfer complete
                     if bytes_relayed >= file_metadata['file_size']:
                         print(f"[FILE] ✓ Relayed {file_metadata['file_name']} "
                               f"({bytes_relayed} bytes) from {username} to {file_metadata['receiver']}")
                         
-                        # Send end frame to receiver
                         end_frame = json.dumps({
                             'type': 'file_transfer_end',
                             'file_id': file_metadata['file_id'],
@@ -117,23 +117,20 @@ def handle(client, username):
                         }) + '\n'
                         receiver_socket.send(end_frame.encode('utf-8'))
                         
-                        # Reset state - back to JSON mode
                         in_file_transfer = False
                         file_metadata = None
                         receiver_socket = None
                         bytes_relayed = 0
                     
-                    continue  # Skip JSON parsing
+                    continue
                     
                 except Exception as e:
                     print(f"[ERROR] File relay failed: {e}")
-                    # Reset state on error
                     in_file_transfer = False
                     file_metadata = None
                     receiver_socket = None
                     bytes_relayed = 0
                     
-                    # Notify sender of failure
                     error_data = {
                         'type': 'error',
                         'message': 'File transfer failed'
@@ -148,7 +145,6 @@ def handle(client, username):
             # Normal JSON message processing
             buffer += chunk.decode('utf-8')
             
-            # Process complete messages (separated by newlines)
             while '\n' in buffer:
                 line, buffer = buffer.split('\n', 1)
                 if not line.strip():
@@ -158,7 +154,7 @@ def handle(client, username):
                     message_data = json.loads(line)
                     message_type = message_data.get('type')
                     
-                    # NEW: Handle file transfer initiation
+                    # Handle file transfer initiation
                     if message_type == 'file_transfer_start':
                         recipient = message_data.get('receiver')
                         file_name = message_data.get('file_name')
@@ -167,7 +163,6 @@ def handle(client, username):
                         
                         print(f"[FILE] {username} wants to send '{file_name}' ({file_size} bytes) to {recipient}")
                         
-                        # Check if recipient is online
                         with clients_lock:
                             if recipient not in clients:
                                 error = {
@@ -181,7 +176,6 @@ def handle(client, username):
                             
                             receiver_socket = clients[recipient]
                         
-                        # Forward metadata to receiver
                         try:
                             receiver_socket.send((json.dumps(message_data) + '\n').encode('utf-8'))
                         except Exception as e:
@@ -194,7 +188,6 @@ def handle(client, username):
                             client.send(json_msg.encode('utf-8'))
                             continue
                         
-                        # Enter binary relay mode
                         in_file_transfer = True
                         file_metadata = message_data
                         bytes_relayed = 0
@@ -202,34 +195,43 @@ def handle(client, username):
                         print(f"[FILE] Entering relay mode: {file_name} → {recipient}")
                     
                     elif message_type == 'group':
+                        msg_text = message_data.get('message')
+                        
+                        # Save to database using ChatHistoryManager
+                        chat_history.save_message(username, 'group', msg_text, 'group')
+                        
                         broadcast_data = {
                             'type': 'group',
                             'from': username,
-                            'message': message_data.get('message')
+                            'message': msg_text
                         }
                         broadcast(broadcast_data)
-                        print(f"[GROUP] {username}: {message_data.get('message')}")
+                        print(f"[GROUP] {username}: {msg_text}")
                         
                     elif message_type == 'dm':
                         recipient = message_data.get('to')
+                        msg_text = message_data.get('message')
+                        
+                        # Save to database using ChatHistoryManager
+                        chat_history.save_message(username, recipient, msg_text, 'dm')
+                        
                         dm_data = {
                             'type': 'dm',
                             'from': username,
-                            'message': message_data.get('message')
+                            'message': msg_text
                         }
                         
                         if send_to_user(recipient, dm_data):
-                            # Send confirmation back to sender
                             confirmation = {
                                 'type': 'dm',
                                 'from': username,
                                 'to': recipient,
-                                'message': message_data.get('message'),
+                                'message': msg_text,
                                 'sent': True
                             }
                             json_msg = json.dumps(confirmation) + '\n'
                             client.send(json_msg.encode('utf-8'))
-                            print(f"[DM] {username} -> {recipient}: {message_data.get('message')}")
+                            print(f"[DM] {username} -> {recipient}: {msg_text}")
                         else:
                             error_data = {
                                 'type': 'error',
@@ -237,19 +239,37 @@ def handle(client, username):
                             }
                             json_msg = json.dumps(error_data) + '\n'
                             client.send(json_msg.encode('utf-8'))
-                            print(f"[ERROR] {username} tried to DM offline user: {recipient}")
                             
                     elif message_type == 'request_users':
                         send_user_list()
+                    
+                    elif message_type == 'request_history':
+                        # Client requesting chat history - use ChatHistoryManager
+                        chat_with = message_data.get('chat_with')
                         
+                        messages = chat_history.get_message_history(
+                            username=username,
+                            chat_with=chat_with,
+                            limit=100
+                        )
+                        
+                        if messages is not None:
+                            history_msg = {
+                                'type': 'history',
+                                'chat_with': chat_with,
+                                'messages': messages
+                            }
+                            json_msg = json.dumps(history_msg) + '\n'
+                            client.send(json_msg.encode('utf-8'))
+                            print(f"[HISTORY] Sent {len(messages)} messages to {username}")
+                        else:
+                            print(f"[ERROR] Failed to fetch history for {username}")
+                            
                 except json.JSONDecodeError as e:
                     print(f"[ERROR] JSON decode error from {username}: {e}")
-                    print(f"[ERROR] Problematic data: {line}")
                     
         except Exception as e:
             print(f"[ERROR] Error handling {username}: {e}")
-            import traceback
-            traceback.print_exc()
             break
     
     # Cleanup
@@ -278,12 +298,9 @@ def receive():
             client, address = server_socket.accept()
             print(f"\n[CONNECTION] New connection from {address[0]}:{address[1]}")
 
-            # Handshake for username
             json_msg = json.dumps({'type': 'request_auth'}) + '\n'
             client.send(json_msg.encode('utf-8'))
-            print(f"[DEBUG] Sent username request")
             
-            # Receive username with timeout
             client.settimeout(10.0)
             
             try:
@@ -291,7 +308,6 @@ def receive():
                 while b'\n' not in data:
                     chunk = client.recv(1024)
                     if not chunk:
-                        print(f"[ERROR] Client disconnected during handshake")
                         client.close()
                         break
                     data += chunk
@@ -300,8 +316,6 @@ def receive():
                     continue
                 
                 message = data.decode('utf-8').strip()
-                print(f"[DEBUG] Received: {message}")
-                
                 auth_data = json.loads(message)
                 token = auth_data.get("token")
 
@@ -319,7 +333,7 @@ def receive():
                         JWT_SECRET,
                         algorithms=[JWT_ALGORITHM]
                     )
-                    username = payload["sub"]  
+                    username = payload["sub"]
                 except jwt.ExpiredSignatureError:
                     client.send(json.dumps({
                         "type": "error",
@@ -335,15 +349,10 @@ def receive():
                     client.close()
                     continue
 
-                
                 if not username:
-                    print(f"[ERROR] Empty username")
                     client.close()
                     continue
                 
-                print(f"[DEBUG] Username: '{username}'")
-                
-                # Check if username taken
                 with clients_lock:
                     if username in clients:
                         error = json.dumps({
@@ -352,7 +361,6 @@ def receive():
                         }) + '\n'
                         client.send(error.encode('utf-8'))
                         client.close()
-                        print(f"[REJECTED] Username '{username}' already taken")
                         continue
                     
                     clients[username] = client
@@ -361,36 +369,24 @@ def receive():
                 
                 print(f"[LOGIN] ✓ {username} logged in")
                 
-                # Send welcome
                 welcome = json.dumps({
                     'type': 'system',
                     'message': f'Welcome to the server, {username}!'
                 }) + '\n'
                 client.send(welcome.encode('utf-8'))
                 
-                # Notify others
                 broadcast({
                     'type': 'system',
                     'message': f'{username} joined the chat'
                 }, exclude_user=username)
                 
-                # Send user list
                 send_user_list()
                 
-                # Start handler
                 thread = threading.Thread(target=handle, args=(client, username), daemon=True)
                 thread.start()
                 
-            except socket.timeout:
-                print(f"[ERROR] Timeout waiting for username")
-                client.close()
-            except json.JSONDecodeError as e:
-                print(f"[ERROR] JSON error: {e}")
-                client.close()
             except Exception as e:
                 print(f"[ERROR] Handshake error: {e}")
-                import traceback
-                traceback.print_exc()
                 client.close()
                 
         except KeyboardInterrupt:
@@ -398,8 +394,6 @@ def receive():
             break
         except Exception as e:
             print(f"[ERROR] Accept error: {e}")
-            import traceback
-            traceback.print_exc()
 
 
 if __name__ == "__main__":

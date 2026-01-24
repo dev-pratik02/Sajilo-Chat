@@ -4,3 +4,4 @@ flask-jwt-extended
 flask-migrate
 python-dotenv
 passlib[bcrypt]
+requests

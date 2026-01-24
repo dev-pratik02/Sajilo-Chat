@@ -3,8 +3,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
-import 'package:open_file/open_file.dart'; // NEW: Import open_file
+import 'package:open_file/open_file.dart';
 import 'package:sajilo_chat/utilities.dart';
+import 'package:sajilo_chat/chat_history_handler.dart'; // NEW: History handler
 import 'message_bubble.dart';
 import 'file_transfer_handler.dart';
 
@@ -12,12 +13,14 @@ class ChatScreen extends StatefulWidget {
   final SocketWrapper socket;
   final String username;
   final String chatWith;
+  final ChatHistoryHandler historyHandler; // NEW: History handler parameter
 
   const ChatScreen({
     super.key,
     required this.socket,
     required this.username,
     required this.chatWith,
+    required this.historyHandler, // NEW: Required parameter
   });
 
   @override
@@ -31,16 +34,20 @@ class _ChatScreenState extends State<ChatScreen> {
   StreamSubscription? _socketSubscription;
   String _buffer = '';
   
+  // File transfer state
   late FileTransferHandler _fileHandler;
   double _fileTransferProgress = 0.0;
   bool _showFileProgress = false;
   String _transferFileName = '';
+  
+  // NEW: History loading state
+  bool _historyLoaded = false;
 
   @override
   void initState() {
     super.initState();
     
-    // UPDATED: Initialize with new callback signature
+    // Initialize file transfer handler
     _fileHandler = FileTransferHandler(
       onProgress: (progress) {
         setState(() {
@@ -48,7 +55,7 @@ class _ChatScreenState extends State<ChatScreen> {
           _showFileProgress = true;
         });
       },
-      onComplete: (fileName, filePath) { // CHANGED: Now receives both
+      onComplete: (fileName, filePath) {
         setState(() {
           _showFileProgress = false;
           _messages.add({
@@ -57,12 +64,11 @@ class _ChatScreenState extends State<ChatScreen> {
             'isMe': false,
             'isFile': true,
             'fileName': fileName,
-            'filePath': filePath, // NEW: Store file path
+            'filePath': filePath,
           });
         });
         _scrollToBottom();
         
-        // NEW: Show snackbar with open button
         if (filePath.isNotEmpty) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -85,16 +91,25 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     
     _setupListener();
+    _requestHistory(); // NEW: Request history on init
+  }
+
+  // NEW: Request chat history
+  void _requestHistory() {
+    print('[ChatScreen] Requesting history for ${widget.chatWith}');
+    widget.historyHandler.requestHistory(widget.chatWith);
   }
 
   void _setupListener() {
     _socketSubscription = widget.socket.stream.listen(
       (data) {
+        // CRITICAL: Check if in file transfer mode
         if (_fileHandler.isReceivingFile) {
           _fileHandler.handleIncomingChunk(data);
           return;
         }
         
+        // Normal JSON message handling
         _buffer += utf8.decode(data);
         
         while (_buffer.contains('\n')) {
@@ -108,6 +123,7 @@ class _ChatScreenState extends State<ChatScreen> {
             final jsonData = jsonDecode(message);
             final type = jsonData['type'];
 
+            // File transfer handling
             if (type == 'file_transfer_start') {
               setState(() => _transferFileName = jsonData['file_name']);
               _fileHandler.handleTransferStart(jsonData);
@@ -115,29 +131,48 @@ class _ChatScreenState extends State<ChatScreen> {
             else if (type == 'file_transfer_end') {
               _fileHandler.handleTransferEnd(jsonData);
             }
-            else if (type == 'group' && widget.chatWith == 'group') {
+            // NEW: History handling
+            else if (type == 'history') {
+              final historyMessages = widget.historyHandler.processHistoryData(jsonData);
               setState(() {
-                _messages.add({
-                  'from': jsonData['from'],
-                  'message': jsonData['message'],
-                  'isMe': jsonData['from'] == widget.username,
-                });
+                _historyLoaded = true;
+                _messages.clear();
+                _messages.addAll(historyMessages);
               });
               _scrollToBottom();
+              print('[ChatScreen] Loaded ${historyMessages.length} messages from history');
+            }
+            // Group message handling
+            else if (type == 'group' && widget.chatWith == 'group') {
+              final newMessage = {
+                'from': jsonData['from'],
+                'message': jsonData['message'],
+                'isMe': jsonData['from'] == widget.username,
+              };
+              setState(() {
+                _messages.add(newMessage);
+              });
+              // NEW: Add to history cache
+              widget.historyHandler.addMessageToCache('group', newMessage);
+              _scrollToBottom();
             } 
+            // Direct message handling
             else if (type == 'dm') {
               final from = jsonData['from'];
               final to = jsonData['to'];
 
               if ((from == widget.username && to == widget.chatWith) ||
                   (from == widget.chatWith)) {
+                final newMessage = {
+                  'from': from,
+                  'message': jsonData['message'],
+                  'isMe': from == widget.username,
+                };
                 setState(() {
-                  _messages.add({
-                    'from': from,
-                    'message': jsonData['message'],
-                    'isMe': from == widget.username,
-                  });
+                  _messages.add(newMessage);
                 });
+                // NEW: Add to history cache
+                widget.historyHandler.addMessageToCache(widget.chatWith, newMessage);
                 _scrollToBottom();
               }
             }
@@ -181,7 +216,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _messageController.clear();
   }
   
-  // NEW: Method to open files
   Future<void> _openFile(String filePath) async {
     try {
       print('[OPEN_FILE] Attempting to open: $filePath');
@@ -323,6 +357,26 @@ class _ChatScreenState extends State<ChatScreen> {
         color: const Color(0xFFECE5DD),
         child: Column(
           children: [
+            // NEW: History loading indicator
+            if (!_historyLoaded)
+              Container(
+                padding: const EdgeInsets.all(8),
+                color: Colors.amber[100],
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    SizedBox(width: 8),
+                    Text('Loading history...', style: TextStyle(fontSize: 12)),
+                  ],
+                ),
+              ),
+            
+            // File transfer progress
             if (_showFileProgress)
               Container(
                 padding: const EdgeInsets.all(12),
@@ -355,6 +409,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             
+            // Messages list
             Expanded(
               child: _messages.isEmpty
                   ? Center(
@@ -398,15 +453,18 @@ class _ChatScreenState extends State<ChatScreen> {
                           showSender: widget.chatWith == 'group' && !msg['isMe'],
                           isFile: msg['isFile'] ?? false,
                           fileName: msg['fileName'],
-                          filePath: msg['filePath'], // NEW: Pass file path
-                          onFileTap: msg['isFile'] == true && msg['filePath'] != null && msg['filePath'].toString().isNotEmpty
-                              ? () => _openFile(msg['filePath']) // NEW: Handle tap
+                          filePath: msg['filePath'],
+                          onFileTap: msg['isFile'] == true && 
+                                     msg['filePath'] != null && 
+                                     msg['filePath'].toString().isNotEmpty
+                              ? () => _openFile(msg['filePath'])
                               : null,
                         );
                       },
                     ),
             ),
             
+            // Input bar
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
               color: Colors.white,

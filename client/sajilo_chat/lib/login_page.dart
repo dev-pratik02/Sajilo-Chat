@@ -19,15 +19,13 @@ class _LoginPageState extends State<LoginPage> {
 
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _serverController = TextEditingController(text: '192.168.0.XXX');
+  final _serverController = TextEditingController(text: '192.168.0.100');
   final _portController = TextEditingController(text: '5050');
 
   bool _isLoading = false;
   bool _isRegisterMode = false;
 
-  // ---------------------------------------------------------------------------
-  // REGISTER
-  // ---------------------------------------------------------------------------
+  // REGISTER - Changed to port 5001
   Future<void> _register() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -39,12 +37,13 @@ class _LoginPageState extends State<LoginPage> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://$host:5000/auth/register'),
+        Uri.parse('http://$host:5001/auth/register'), // CHANGED: 5000 → 5001
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'username': username, 'password': password}),
       );
 
       if (response.statusCode == 201) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('✅ Registration successful! You can now login.'),
@@ -58,6 +57,7 @@ class _LoginPageState extends State<LoginPage> {
         throw Exception(err['error'] ?? 'Registration failed');
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('❌ Error: $e'),
@@ -69,9 +69,7 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // LOGIN + SOCKET CONNECT
-  // ---------------------------------------------------------------------------
+  // LOGIN + SOCKET CONNECT - Changed to port 5001
   Future<void> _loginAndConnect() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);
@@ -82,10 +80,10 @@ class _LoginPageState extends State<LoginPage> {
       final username = _usernameController.text.trim();
       final password = _passwordController.text.trim();
 
-      // LOGIN VIA FLASK
+      // LOGIN VIA FLASK - Changed to port 5001
       final loginResponse = await http
           .post(
-            Uri.parse('http://$host:5000/auth/login'),
+            Uri.parse('http://$host:5001/auth/login'), // CHANGED: 5000 → 5001
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'username': username, 'password': password}),
           )
@@ -98,7 +96,7 @@ class _LoginPageState extends State<LoginPage> {
 
       final accessToken = jsonDecode(loginResponse.body)['access_token'];
 
-      // CONNECT TO CHAT SERVER
+      // CONNECT TO CHAT SERVER (port 5050)
       final socket = await Socket.connect(
         host,
         port,
@@ -160,9 +158,6 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  // =========================================================================
-  // UI
-  // =========================================================================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -288,7 +283,7 @@ class _LoginPageState extends State<LoginPage> {
                           child: Text(
                             _isRegisterMode
                                 ? 'Already have an account? Login'
-                                : 'Don’t have an account? Register',
+                                : 'Do not have an account? Register',
                             style: const TextStyle(
                               color: Colors.white,
                               decoration: TextDecoration.underline,
@@ -313,15 +308,15 @@ class _LoginPageState extends State<LoginPage> {
                                 ),
                                 SizedBox(height: 5),
                                 Text(
-                                  '1. Start server: python chatroom_server.py',
+                                  '1. Start Flask: python run.py (port 5001)',
                                   style: TextStyle(color: Colors.white70, fontSize: 11),
                                 ),
                                 Text(
-                                  '2. Use "localhost" for same PC',
+                                  '2. Start Chat: python dm_server.py (port 5050)',
                                   style: TextStyle(color: Colors.white70, fontSize: 11),
                                 ),
                                 Text(
-                                  '3. Port: 5050',
+                                  '3. Use "localhost" for same PC',
                                   style: TextStyle(color: Colors.white70, fontSize: 11),
                                 ),
                               ],
@@ -346,9 +341,6 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  // =========================================================================
-  // INPUT FIELD DECORATOR
-  // =========================================================================
   Widget _buildTextField({
     required TextEditingController controller,
     required String hintText,
