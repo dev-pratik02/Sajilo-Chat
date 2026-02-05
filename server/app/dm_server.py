@@ -2,10 +2,16 @@ import socket
 import threading
 import json
 import jwt
+import os
+import time
 from chat_history_manager import ChatHistoryManager
 
-JWT_SECRET = "jwt-secret-change-me"
+# Configuration - use environment variables for security
+JWT_SECRET = os.getenv("JWT_SECRET_KEY", "jwt-dev-secret")  # FIXED: Match unified_server
 JWT_ALGORITHM = "HS256"
+BUFFER_SIZE = int(os.getenv("BUFFER_SIZE", "4096"))  # FIXED: Configurable
+MAX_MESSAGE_SIZE = int(os.getenv("MAX_MESSAGE_SIZE", "10240"))  # FIXED: 10KB limit
+FILE_TRANSFER_TIMEOUT = int(os.getenv("FILE_TRANSFER_TIMEOUT", "300"))  # FIXED: 5 min timeout
 
 def get_lan_ip():
     try:
@@ -19,7 +25,6 @@ def get_lan_ip():
 
 IP_address = get_lan_ip()
 Port = 5050
-BufferSize = 4096
 
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -33,12 +38,14 @@ try:
     print("=" * 60)
     print("         SAJILO CHAT SERVER (WITH HISTORY)")
     print("=" * 60)
-    print(f"Server is listening on {IP_address}:{Port}")
-    print(f"Database API: {chat_history.db_api_url}")
-    print("Waiting for connections...")
+    print(f"[SERVER] Listening on {IP_address}:{Port}")
+    print(f"[SERVER] Database API: {chat_history.db_api_url}")
+    print(f"[SERVER] JWT Secret: {JWT_SECRET[:10]}...")
+    print(f"[SERVER] Buffer Size: {BUFFER_SIZE} bytes")
+    print(f"[SERVER] Max Message Size: {MAX_MESSAGE_SIZE} bytes")
     print("=" * 60)
 except OSError as e:
-    print(f"Error binding to port: {e}")
+    print(f"[ERROR] Error binding to port: {e}")
     exit()
 
 clients = {}
@@ -48,13 +55,20 @@ clients_lock = threading.Lock()
 def broadcast(message_data, exclude_user=None):
     """Send message to all connected clients except exclude_user"""
     with clients_lock:
+        disconnected = []
         for username, client in clients.items():
             if username != exclude_user:
                 try:
                     json_msg = json.dumps(message_data) + '\n'
                     client.send(json_msg.encode('utf-8'))
-                except:
-                    pass
+                except Exception as e:
+                    print(f"[ERROR] Failed to send to {username}: {e}")
+                    disconnected.append(username)
+        
+        # Clean up disconnected clients
+        for username in disconnected:
+            if username in clients:
+                del clients[username]
 
 
 def send_to_user(username, message_data):
@@ -65,7 +79,11 @@ def send_to_user(username, message_data):
                 json_msg = json.dumps(message_data) + '\n'
                 clients[username].send(json_msg.encode('utf-8'))
                 return True
-            except:
+            except Exception as e:
+                print(f"[ERROR] Failed to send to {username}: {e}")
+                # Remove disconnected client
+                if username in clients:
+                    del clients[username]
                 return False
         return False
 
@@ -92,17 +110,58 @@ def handle(client, username):
     file_metadata = None
     receiver_socket = None
     bytes_relayed = 0
+    transfer_start_time = None  # FIXED: Add timeout tracking
     
     while True:
         try:
-            chunk = client.recv(BufferSize)
+            chunk = client.recv(BUFFER_SIZE)
             if not chunk:
                 print(f"[INFO] {username} connection closed")
                 break
             
-            # Binary relay mode for file transfers
+            # FIXED: Binary relay mode for file transfers with timeout
             if in_file_transfer:
+                # Check timeout
+                if transfer_start_time and (time.time() - transfer_start_time) > FILE_TRANSFER_TIMEOUT:
+                    print(f"[ERROR] File transfer timeout for {username}")
+                    error_data = {
+                        'type': 'error',
+                        'message': 'File transfer timeout'
+                    }
+                    try:
+                        client.send((json.dumps(error_data) + '\n').encode('utf-8'))
+                        if receiver_socket:
+                            receiver_socket.send((json.dumps(error_data) + '\n').encode('utf-8'))
+                    except:
+                        pass
+                    
+                    # Reset state
+                    in_file_transfer = False
+                    file_metadata = None
+                    receiver_socket = None
+                    bytes_relayed = 0
+                    transfer_start_time = None
+                    continue
+                
                 try:
+                    # FIXED: Check if receiver still connected
+                    with clients_lock:
+                        if file_metadata and file_metadata.get('receiver') not in clients:
+                            print(f"[ERROR] Receiver {file_metadata.get('receiver')} disconnected during transfer")
+                            error_data = {
+                                'type': 'error',
+                                'message': f'Recipient {file_metadata.get("receiver")} disconnected'
+                            }
+                            client.send((json.dumps(error_data) + '\n').encode('utf-8'))
+                            
+                            # Reset state
+                            in_file_transfer = False
+                            file_metadata = None
+                            receiver_socket = None
+                            bytes_relayed = 0
+                            transfer_start_time = None
+                            continue
+                    
                     receiver_socket.send(chunk)
                     bytes_relayed += len(chunk)
                     
@@ -117,27 +176,31 @@ def handle(client, username):
                         }) + '\n'
                         receiver_socket.send(end_frame.encode('utf-8'))
                         
+                        # Reset state
                         in_file_transfer = False
                         file_metadata = None
                         receiver_socket = None
                         bytes_relayed = 0
+                        transfer_start_time = None
                     
                     continue
                     
                 except Exception as e:
                     print(f"[ERROR] File relay failed: {e}")
+                    
+                    # Reset state
                     in_file_transfer = False
                     file_metadata = None
                     receiver_socket = None
                     bytes_relayed = 0
+                    transfer_start_time = None
                     
                     error_data = {
                         'type': 'error',
-                        'message': 'File transfer failed'
+                        'message': f'File transfer failed: {str(e)}'
                     }
                     try:
-                        json_msg = json.dumps(error_data) + '\n'
-                        client.send(json_msg.encode('utf-8'))
+                        client.send((json.dumps(error_data) + '\n').encode('utf-8'))
                     except:
                         pass
                     continue
@@ -145,9 +208,36 @@ def handle(client, username):
             # Normal JSON message processing
             buffer += chunk.decode('utf-8')
             
+            # FIXED: Buffer size limit
+            if len(buffer) > MAX_MESSAGE_SIZE * 2:
+                print(f"[ERROR] Buffer overflow for {username}, clearing")
+                buffer = ""
+                error_data = {
+                    'type': 'error',
+                    'message': 'Message too large, buffer cleared'
+                }
+                try:
+                    client.send((json.dumps(error_data) + '\n').encode('utf-8'))
+                except:
+                    pass
+                continue
+            
             while '\n' in buffer:
                 line, buffer = buffer.split('\n', 1)
                 if not line.strip():
+                    continue
+                
+                # FIXED: Validate message size
+                if len(line) > MAX_MESSAGE_SIZE:
+                    print(f"[ERROR] Message too large from {username}: {len(line)} bytes")
+                    error_data = {
+                        'type': 'error',
+                        'message': f'Message too large (max {MAX_MESSAGE_SIZE} bytes)'
+                    }
+                    try:
+                        client.send((json.dumps(error_data) + '\n').encode('utf-8'))
+                    except:
+                        pass
                     continue
                 
                 try:
@@ -169,8 +259,7 @@ def handle(client, username):
                                     'type': 'error',
                                     'message': f'{recipient} is offline. Cannot send file.'
                                 }
-                                json_msg = json.dumps(error) + '\n'
-                                client.send(json_msg.encode('utf-8'))
+                                client.send((json.dumps(error) + '\n').encode('utf-8'))
                                 print(f"[ERROR] {recipient} offline, can't relay file")
                                 continue
                             
@@ -184,18 +273,27 @@ def handle(client, username):
                                 'type': 'error',
                                 'message': f'Failed to reach {recipient}'
                             }
-                            json_msg = json.dumps(error) + '\n'
-                            client.send(json_msg.encode('utf-8'))
+                            client.send((json.dumps(error) + '\n').encode('utf-8'))
                             continue
                         
                         in_file_transfer = True
                         file_metadata = message_data
                         bytes_relayed = 0
+                        transfer_start_time = time.time()  # FIXED: Start timeout timer
                         
                         print(f"[FILE] Entering relay mode: {file_name} → {recipient}")
                     
                     elif message_type == 'group':
-                        msg_text = message_data.get('message')
+                        msg_text = message_data.get('message', '')
+                        
+                        # FIXED: Validate message content
+                        if not msg_text or len(msg_text) > MAX_MESSAGE_SIZE:
+                            error_data = {
+                                'type': 'error',
+                                'message': 'Invalid message'
+                            }
+                            client.send((json.dumps(error_data) + '\n').encode('utf-8'))
+                            continue
                         
                         # Save to database using ChatHistoryManager
                         chat_history.save_message(username, 'group', msg_text, 'group')
@@ -206,11 +304,20 @@ def handle(client, username):
                             'message': msg_text
                         }
                         broadcast(broadcast_data)
-                        print(f"[GROUP] {username}: {msg_text}")
+                        print(f"[GROUP] {username}: {msg_text[:50]}...")
                         
                     elif message_type == 'dm':
                         recipient = message_data.get('to')
-                        msg_text = message_data.get('message')
+                        msg_text = message_data.get('message', '')
+                        
+                        # FIXED: Validate message content and recipient
+                        if not msg_text or len(msg_text) > MAX_MESSAGE_SIZE or not recipient:
+                            error_data = {
+                                'type': 'error',
+                                'message': 'Invalid message or recipient'
+                            }
+                            client.send((json.dumps(error_data) + '\n').encode('utf-8'))
+                            continue
                         
                         # Save to database using ChatHistoryManager
                         chat_history.save_message(username, recipient, msg_text, 'dm')
@@ -229,16 +336,14 @@ def handle(client, username):
                                 'message': msg_text,
                                 'sent': True
                             }
-                            json_msg = json.dumps(confirmation) + '\n'
-                            client.send(json_msg.encode('utf-8'))
-                            print(f"[DM] {username} -> {recipient}: {msg_text}")
+                            client.send((json.dumps(confirmation) + '\n').encode('utf-8'))
+                            print(f"[DM] {username} -> {recipient}: {msg_text[:50]}...")
                         else:
                             error_data = {
                                 'type': 'error',
                                 'message': f'User {recipient} not found or offline'
                             }
-                            json_msg = json.dumps(error_data) + '\n'
-                            client.send(json_msg.encode('utf-8'))
+                            client.send((json.dumps(error_data) + '\n').encode('utf-8'))
                             
                     elif message_type == 'request_users':
                         send_user_list()
@@ -246,6 +351,14 @@ def handle(client, username):
                     elif message_type == 'request_history':
                         # Client requesting chat history - use ChatHistoryManager
                         chat_with = message_data.get('chat_with')
+                        
+                        if not chat_with:
+                            error_data = {
+                                'type': 'error',
+                                'message': 'Invalid history request'
+                            }
+                            client.send((json.dumps(error_data) + '\n').encode('utf-8'))
+                            continue
                         
                         messages = chat_history.get_message_history(
                             username=username,
@@ -259,14 +372,26 @@ def handle(client, username):
                                 'chat_with': chat_with,
                                 'messages': messages
                             }
-                            json_msg = json.dumps(history_msg) + '\n'
-                            client.send(json_msg.encode('utf-8'))
-                            print(f"[HISTORY] Sent {len(messages)} messages to {username}")
+                            client.send((json.dumps(history_msg) + '\n').encode('utf-8'))
+                            print(f"[HISTORY] Sent {len(messages)} messages to {username} for {chat_with}")
                         else:
                             print(f"[ERROR] Failed to fetch history for {username}")
+                            error_data = {
+                                'type': 'error',
+                                'message': 'Failed to fetch history'
+                            }
+                            client.send((json.dumps(error_data) + '\n').encode('utf-8'))
                             
                 except json.JSONDecodeError as e:
                     print(f"[ERROR] JSON decode error from {username}: {e}")
+                    error_data = {
+                        'type': 'error',
+                        'message': 'Invalid message format'
+                    }
+                    try:
+                        client.send((json.dumps(error_data) + '\n').encode('utf-8'))
+                    except:
+                        pass
                     
         except Exception as e:
             print(f"[ERROR] Error handling {username}: {e}")
@@ -298,6 +423,7 @@ def receive():
             client, address = server_socket.accept()
             print(f"\n[CONNECTION] New connection from {address[0]}:{address[1]}")
 
+            # Send auth request
             json_msg = json.dumps({'type': 'request_auth'}) + '\n'
             client.send(json_msg.encode('utf-8'))
             
@@ -341,7 +467,8 @@ def receive():
                     }).encode())
                     client.close()
                     continue
-                except jwt.InvalidTokenError:
+                except jwt.InvalidTokenError as e:
+                    print(f"[ERROR] Invalid token: {e}")
                     client.send(json.dumps({
                         "type": "error",
                         "message": "Invalid token"
@@ -350,6 +477,16 @@ def receive():
                     continue
 
                 if not username:
+                    client.close()
+                    continue
+                
+                # FIXED: Username validation
+                if not username.replace('_', '').isalnum() or len(username) > 30:
+                    error = json.dumps({
+                        'type': 'error',
+                        'message': 'Invalid username format'
+                    }) + '\n'
+                    client.send(error.encode('utf-8'))
                     client.close()
                     continue
                 
@@ -363,6 +500,7 @@ def receive():
                         client.close()
                         continue
                     
+                    # FIXED: Atomic addition to prevent race condition
                     clients[username] = client
                 
                 client.settimeout(None)
@@ -387,7 +525,10 @@ def receive():
                 
             except Exception as e:
                 print(f"[ERROR] Handshake error: {e}")
-                client.close()
+                try:
+                    client.close()
+                except:
+                    pass
                 
         except KeyboardInterrupt:
             print("\n[SHUTDOWN] Server shutting down...")
