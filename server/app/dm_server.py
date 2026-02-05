@@ -4,6 +4,7 @@ import json
 import jwt
 import os
 import time
+import struct
 from dotenv import load_dotenv
 
 # Load environment variables from .env if present
@@ -107,10 +108,9 @@ def send_user_list():
 
 def handle(client, username):
     """Handle messages from a client"""
-    buffer = ""
+    buffer = b""
     
     # File transfer state tracking
-    in_file_transfer = False
     file_metadata = None
     receiver_socket = None
     bytes_relayed = 0
@@ -123,99 +123,15 @@ def handle(client, username):
                 print(f"[INFO] {username} connection closed")
                 break
             
-            # FIXED: Binary relay mode for file transfers with timeout
-            if in_file_transfer:
-                # Check timeout
-                if transfer_start_time and (time.time() - transfer_start_time) > FILE_TRANSFER_TIMEOUT:
-                    print(f"[ERROR] File transfer timeout for {username}")
-                    error_data = {
-                        'type': 'error',
-                        'message': 'File transfer timeout'
-                    }
-                    try:
-                        client.send((json.dumps(error_data) + '\n').encode('utf-8'))
-                        if receiver_socket:
-                            receiver_socket.send((json.dumps(error_data) + '\n').encode('utf-8'))
-                    except:
-                        pass
-                    
-                    # Reset state
-                    in_file_transfer = False
-                    file_metadata = None
-                    receiver_socket = None
-                    bytes_relayed = 0
-                    transfer_start_time = None
-                    continue
-                
-                try:
-                    # FIXED: Check if receiver still connected
-                    with clients_lock:
-                        if file_metadata and file_metadata.get('receiver') not in clients:
-                            print(f"[ERROR] Receiver {file_metadata.get('receiver')} disconnected during transfer")
-                            error_data = {
-                                'type': 'error',
-                                'message': f'Recipient {file_metadata.get("receiver")} disconnected'
-                            }
-                            client.send((json.dumps(error_data) + '\n').encode('utf-8'))
-                            
-                            # Reset state
-                            in_file_transfer = False
-                            file_metadata = None
-                            receiver_socket = None
-                            bytes_relayed = 0
-                            transfer_start_time = None
-                            continue
-                    
-                    receiver_socket.send(chunk)
-                    bytes_relayed += len(chunk)
-                    
-                    if bytes_relayed >= file_metadata['file_size']:
-                        print(f"[FILE] ✓ Relayed {file_metadata['file_name']} "
-                              f"({bytes_relayed} bytes) from {username} to {file_metadata['receiver']}")
-                        
-                        end_frame = json.dumps({
-                            'type': 'file_transfer_end',
-                            'file_id': file_metadata['file_id'],
-                            'status': 'success'
-                        }) + '\n'
-                        receiver_socket.send(end_frame.encode('utf-8'))
-                        
-                        # Reset state
-                        in_file_transfer = False
-                        file_metadata = None
-                        receiver_socket = None
-                        bytes_relayed = 0
-                        transfer_start_time = None
-                    
-                    continue
-                    
-                except Exception as e:
-                    print(f"[ERROR] File relay failed: {e}")
-                    
-                    # Reset state
-                    in_file_transfer = False
-                    file_metadata = None
-                    receiver_socket = None
-                    bytes_relayed = 0
-                    transfer_start_time = None
-                    
-                    error_data = {
-                        'type': 'error',
-                        'message': f'File transfer failed: {str(e)}'
-                    }
-                    try:
-                        client.send((json.dumps(error_data) + '\n').encode('utf-8'))
-                    except:
-                        pass
-                    continue
+            # (old in-file-transfer branch removed) — using length-prefixed streaming below
             
-            # Normal JSON message processing
-            buffer += chunk.decode('utf-8')
+            # Normal JSON message processing using byte buffer
+            buffer += chunk
             
             # FIXED: Buffer size limit
             if len(buffer) > MAX_MESSAGE_SIZE * 2:
                 print(f"[ERROR] Buffer overflow for {username}, clearing")
-                buffer = ""
+                buffer = b""
                 error_data = {
                     'type': 'error',
                     'message': 'Message too large, buffer cleared'
@@ -226,11 +142,12 @@ def handle(client, username):
                     pass
                 continue
             
-            while '\n' in buffer:
-                line, buffer = buffer.split('\n', 1)
+            # Process any complete JSON lines in the byte buffer
+            while b'\n' in buffer:
+                line, buffer = buffer.split(b'\n', 1)
                 if not line.strip():
                     continue
-                
+
                 # FIXED: Validate message size
                 if len(line) > MAX_MESSAGE_SIZE:
                     print(f"[ERROR] Message too large from {username}: {len(line)} bytes")
@@ -243,9 +160,12 @@ def handle(client, username):
                     except:
                         pass
                     continue
-                
+
                 try:
-                    message_data = json.loads(line)
+                    try:
+                        message_data = json.loads(line.decode('utf-8'))
+                    except Exception:
+                        raise json.JSONDecodeError('Invalid UTF-8 in JSON header', '', 0)
                     message_type = message_data.get('type')
                     
                     # Handle file transfer initiation
@@ -268,8 +188,9 @@ def handle(client, username):
                                 continue
                             
                             receiver_socket = clients[recipient]
-                        
+
                         try:
+                            # Forward metadata to receiver
                             receiver_socket.send((json.dumps(message_data) + '\n').encode('utf-8'))
                         except Exception as e:
                             print(f"[ERROR] Could not send metadata to {recipient}: {e}")
@@ -279,14 +200,170 @@ def handle(client, username):
                             }
                             client.send((json.dumps(error) + '\n').encode('utf-8'))
                             continue
-                        
-                        in_file_transfer = True
+
+                        # Remember metadata so we can match the later end-frame
                         file_metadata = message_data
+
+                        # Now perform a deterministic length-prefixed relay: send a 4-byte BE length to the
+                        # receiver, then read exactly `file_size` bytes from the sender and forward them.
+                        try:
+                            expected = int(file_size)
+                        except Exception:
+                            expected = 0
+
+                        if expected <= 0:
+                            err = {'type': 'error', 'message': 'Invalid file size'}
+                            client.send((json.dumps(err) + '\n').encode('utf-8'))
+                            continue
+
+                        print(f"[FILE] Streaming {file_name} ({expected} bytes) from {username} to {recipient}")
+
+                        try:
+                            # Send 4-byte big-endian length prefix to receiver
+                            receiver_socket.sendall(struct.pack('>I', expected))
+                        except Exception as e:
+                            print(f"[ERROR] Could not send length prefix to receiver: {e}")
+                            client.send((json.dumps({'type': 'error', 'message': 'Receiver unreachable'}) + '\n').encode('utf-8'))
+                            continue
+
                         bytes_relayed = 0
-                        transfer_start_time = time.time()  # FIXED: Start timeout timer
+                        transfer_start_time = time.time()
+
+                        # Stream file bytes from sender to receiver. Any trailing bytes received
+                        # beyond the expected file length will be pushed back into `buffer`
+                        # so the JSON processing loop can handle them (including the
+                        # `file_transfer_end` frame).
                         
-                        print(f"[FILE] Entering relay mode: {file_name} → {recipient}")
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                        
+                            # If we already have some decoded JSON buffer (from the initial recv),
+                            # it may contain part or all of the file bytes (if they were ASCII).
+                            # Consume those bytes first before performing new recv() calls.
+                        if buffer:
+                                # buffer is a bytes object containing any leftover after parsing headers
+                                buf_bytes = buffer
+
+                                if buf_bytes:
+                                    need = expected - bytes_relayed
+                                    data_part = buf_bytes[:need]
+                                    if data_part:
+                                        try:
+                                            print(f"[DEBUG] initial buf len={len(buf_bytes)} need={need} data_part_len={len(data_part)}")
+                                            receiver_socket.sendall(data_part)
+                                        except Exception as e:
+                                            raise Exception(f'Failed to forward initial buffered bytes: {e}')
+                                        bytes_relayed += len(data_part)
+                                    # Rebuild buffer from any leftover tail (keep as bytes)
+                                    leftover = buf_bytes[len(data_part):]
+                                    buffer = leftover
+                        try:
+                            while bytes_relayed < expected:
+                                need = expected - bytes_relayed
+                                to_read = min(BUFFER_SIZE, need)
+                                chunk = client.recv(to_read)
+                                if not chunk:
+                                    raise Exception('Sender disconnected during file transfer')
+
+                                # If chunk contains more than the remaining file bytes, split it.
+                                if len(chunk) > need:
+                                    data_part = chunk[:need]
+                                    tail = chunk[need:]
+                                else:
+                                    data_part = chunk
+                                    tail = b''
+
+                                # Forward only the binary data part to the receiver
+                                receiver_socket.sendall(data_part)
+                                bytes_relayed += len(data_part)
+
+                                # If there is a tail (JSON frames appended by sender), prepend it to the
+                                # byte buffer so the normal JSON loop will process it next.
+                                if tail:
+                                    buffer = tail + buffer
+
+                                # Check timeout
+                                if time.time() - transfer_start_time > FILE_TRANSFER_TIMEOUT:
+                                    raise Exception('File transfer timeout')
+
+                            print(f"[FILE] ✓ Completed streaming {file_name} ({bytes_relayed} bytes)")
+                            # Completed streaming; any trailing JSON remains in `buffer` and
+                            # will be processed by the normal JSON loop below.
+                        except Exception as e:
+                            print(f"[ERROR] File streaming failed: {e}")
+                            try:
+                                client.send((json.dumps({'type': 'error', 'message': str(e)}) + '\n').encode('utf-8'))
+                            except:
+                                pass
+                            try:
+                                receiver_socket.send((json.dumps({'type': 'error', 'message': str(e)}) + '\n').encode('utf-8'))
+                            except:
+                                pass
+                        finally:
+                            # After streaming we DO NOT clear `file_metadata` immediately because the
+                            # sender may have appended a JSON end-frame which has been placed into
+                            # `buffer` and will be processed by the JSON loop below. Keep
+                            # `receiver_socket` and `file_metadata` around until the end-frame
+                            # is consumed and forwarded.
+                            transfer_start_time = transfer_start_time
                     
+                    elif message_type == 'file_transfer_end':
+                        # Forward the end-frame to the receiver if we have an active transfer
+                        try:
+                            target_id = message_data.get('file_id')
+                            if file_metadata and file_metadata.get('file_id') == target_id and receiver_socket:
+                                try:
+                                    receiver_socket.send((json.dumps(message_data) + '\n').encode('utf-8'))
+                                except Exception as e:
+                                    print(f"[ERROR] Failed to forward file_transfer_end to receiver: {e}")
+                                # Clear transfer state now that end-frame forwarded
+                                file_metadata = None
+                                receiver_socket = None
+                                bytes_relayed = 0
+                                transfer_start_time = None
+                            else:
+                                # No active transfer matching this id; ignore or log
+                                print(f"[WARN] Received file_transfer_end for unknown id: {target_id}")
+                        except Exception:
+                            pass
+
                     elif message_type == 'group':
                         msg_text = message_data.get('message', '')
                         
