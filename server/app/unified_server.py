@@ -254,7 +254,7 @@ def health():
 
 with app.app_context():
     db.create_all()
-    print("✅ Database initialized!")
+    print("  Database initialized!")
 
 if __name__ == '__main__':
     print("=" * 60)

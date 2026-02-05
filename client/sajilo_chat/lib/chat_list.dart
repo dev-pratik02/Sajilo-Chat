@@ -1,4 +1,5 @@
 import "package:flutter/material.dart";
+import 'package:google_fonts/google_fonts.dart';
 import 'package:sajilo_chat/login_page.dart';
 import 'dart:convert';
 import 'dart:async';
@@ -27,7 +28,7 @@ class ChatsListPage extends StatefulWidget {
   State<ChatsListPage> createState() => _ChatsListPageState();
 }
 
-class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
+class _ChatsListPageState extends State<ChatsListPage> with RouteAware, TickerProviderStateMixin {
   StreamSubscription? _socketSubscription;
   List<String> _onlineUsers = [];
   final Map<String, int> _unreadCounts = {'group': 0};
@@ -37,14 +38,13 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
   
   late ChatHistoryHandler _historyHandler;
   
-  // FIXED: Track if we're currently in a chat to pause processing
   bool _isInChat = false;
   String? _currentChatWith;
 
   @override
   void initState() {
     super.initState();
-    // If required connection info is missing, redirect to Login
+    
     if (widget.socket == null || widget.username == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -71,11 +71,9 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
         'message': 'Requesting list'
       })}\n';
       widget.socket!.write(utf8.encode(request));
-      
     });
   }
 
-  // Attempt to reconnect to server and re-authenticate using stored token
   Future<bool> _attemptReconnect() async {
     try {
       print('[ChatList] Attempting reconnect to ${widget.serverHost}:${widget.serverPort}');
@@ -83,7 +81,6 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
       final socket = await Socket.connect(widget.serverHost, widget.serverPort, timeout: Duration(seconds: 8));
       final wrapped = SocketWrapper(socket);
 
-      // Wait for request_auth and send token
       final completer = Completer<bool>();
       String buffer = '';
       late StreamSubscription sub;
@@ -105,7 +102,6 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
               wrapped.write(utf8.encode(jsonEncode({'token': widget.accessToken}) + '\n'));
             }
             if (j['type'] == 'system' && j['message'] != null && j['message'].toString().contains('Welcome')) {
-              // Auth successful
               completer.complete(true);
             }
           } catch (e) {
@@ -125,7 +121,6 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
         return false;
       }
 
-      // Replace page with new socket instance
       if (!mounted) return false;
       navigator.pushReplacement(
         MaterialPageRoute(
@@ -151,8 +146,7 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
     
     _socketSubscription = widget.socket!.stream.listen(
       (data) {
-        // FIXED: Check buffer size to prevent overflow
-        if (_buffer.length > 20480) {  // 20KB limit
+        if (_buffer.length > 20480) {
           print('[ChatList] Buffer overflow, clearing');
           _buffer = '';
         }
@@ -185,7 +179,6 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
               final from = jsonData['from'];
               final msg = jsonData['message'];
 
-              // FIXED: Don't update unread if currently in group chat
               if (!_isInChat || _currentChatWith != 'group') {
                 if (!mounted) return;
                 setState(() {
@@ -193,7 +186,6 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
                   _unreadCounts['group'] = (_unreadCounts['group'] ?? 0) + 1;
                 });
               } else {
-                // Just update last message without incrementing unread
                 if (!mounted) return;
                 setState(() {
                   _lastMessages['group'] = '$from: $msg';
@@ -205,7 +197,6 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
               final msg = jsonData['message'];
               
               if (from != widget.username) {
-                // FIXED: Don't update unread if currently in this DM
                 if (!_isInChat || _currentChatWith != from) {
                   if (!mounted) return;
                   setState(() {
@@ -213,7 +204,6 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
                     _unreadCounts[from] = (_unreadCounts[from] ?? 0) + 1;
                   });
                 } else {
-                  // Just update last message without incrementing unread
                   if (!mounted) return;
                   setState(() {
                     _lastMessages[from] = msg;
@@ -221,14 +211,14 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
                 }
               }
             } else if (type == 'error') {
-              // FIXED: Handle error messages from server
               final errorMsg = jsonData['message'] ?? 'Unknown error';
               print('[ChatList] Server error: $errorMsg');
               if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text('Server: $errorMsg'),
-                  backgroundColor: Colors.orange,
+                  backgroundColor: Color(0xFFFF6B6B),
+                  behavior: SnackBarBehavior.floating,
                 ),
               );
             }
@@ -254,94 +244,105 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
   }
 
   void _showDisconnectDialog() {
-    if (!mounted) return;
-    
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: Text('Disconnected'),
-        content: Text('Lost connection to server'),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(
+          'Connection Lost',
+          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
+        ),
+        content: Text(
+          'Would you like to reconnect?',
+          style: GoogleFonts.poppins(),
+        ),
         actions: [
-          // Option to retry connection
-          TextButton(
-            onPressed: () async {
-              if (!mounted) return;
-              Navigator.of(context).pop();
-              // show temporary progress dialog
-              final navigator = Navigator.of(context);
-              showDialog(
-                context: context,
-                barrierDismissible: false,
-                builder: (context) => const AlertDialog(
-                  content: SizedBox(
-                    height: 60,
-                    child: Center(child: CircularProgressIndicator()),
-                  ),
-                ),
-              );
-
-              final messenger = ScaffoldMessenger.of(context);
-              final ok = await _attemptReconnect();
-              navigator.pop(); // remove progress dialog
-
-              if (!ok) {
-                if (!mounted) return;
-                messenger.showSnackBar(const SnackBar(content: Text('Reconnect failed')));
-                // return to login
-                navigator.pop();
-              }
-            },
-            child: Text('Retry'),
-          ),
           TextButton(
             onPressed: () {
-              Navigator.of(context).pop();
-              Navigator.of(context).pop();
+              Navigator.pop(context);
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => LoginPage()),
+              );
             },
-            child: Text('Exit'),
+            child: Text('Logout', style: GoogleFonts.poppins(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              final reconnected = await _attemptReconnect();
+              if (!reconnected && mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Reconnection failed'),
+                    backgroundColor: Color(0xFFFF6B6B),
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Color(0xFF6C63FF),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: Text('Reconnect', style: GoogleFonts.poppins(color: Colors.white)),
           ),
         ],
       ),
     );
   }
 
-  void _openChat(String chatWith) {
-    // FIXED: Mark that we're entering a chat
-    _isInChat = true;
-    _currentChatWith = chatWith;
-    
+  void _openChat(String chatWith) async {
     setState(() {
-      _unreadCounts[chatWith] = 0;
+      _isInChat = true;
+      _currentChatWith = chatWith;
     });
 
-    Navigator.push(
+    await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => ChatScreen(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => ChatScreen(
           socket: widget.socket!,
           username: widget.username!,
           chatWith: chatWith,
           historyHandler: _historyHandler,
         ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          const begin = Offset(1.0, 0.0);
+          const end = Offset.zero;
+          const curve = Curves.easeInOutCubic;
+          var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
+          return SlideTransition(
+            position: animation.drive(tween),
+            child: child,
+          );
+        },
+        transitionDuration: Duration(milliseconds: 300),
       ),
-    ).then((_) {
-      // FIXED: Mark that we've left the chat
+    );
+
+    setState(() {
       _isInChat = false;
       _currentChatWith = null;
-      
-      if (mounted) {
-        setState(() {
-          _unreadCounts[chatWith] = 0;
-        });
-      }
     });
+
+    if (mounted) {
+      setState(() {
+        _unreadCounts[chatWith] = 0;
+      });
+    }
   }
 
   Color _getAvatarColor(int index) {
     final colors = [
-      Colors.pink, Colors.blue, Colors.green, Colors.orange,
-      Colors.teal, Colors.purple, Colors.red, Colors.indigo,
+      Color(0xFF6C63FF), // Purple
+      Color(0xFF4ECDC4), // Teal
+      Color(0xFFFF6B6B), // Red
+      Color(0xFFFFA502), // Orange
+      Color(0xFF26DE81), // Green
+      Color(0xFFFC5C65), // Pink
+      Color(0xFF45AAF2), // Blue
+      Color(0xFFA55EEA), // Violet
     ];
     return colors[index % colors.length];
   }
@@ -357,39 +358,70 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
     final allChats = ['Group Chat', ..._onlineUsers];
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Color(0xFFF5F5FA),
       appBar: AppBar(
-        backgroundColor: Color(0xFF075E54),
+        backgroundColor: Color(0xFF6C63FF),
+        elevation: 0,
         title: Row(
           children: [
-            Text(
-              'Sajilo Chat',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            SizedBox(width: 8),
             Container(
-              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              padding: EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: _isConnected ? Colors.green : Colors.red,
+                color: Colors.white.withOpacity(0.2),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Text(
-                _isConnected ? 'Online' : 'Offline',
-                style: TextStyle(fontSize: 10, color: Colors.white),
+              child: Icon(Icons.chat_bubble_rounded, color: Colors.white, size: 24),
+            ),
+            SizedBox(width: 12),
+            Text(
+              'Sajilo Chat',
+              style: GoogleFonts.poppins(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+              ),
+            ),
+            SizedBox(width: 12),
+            AnimatedContainer(
+              duration: Duration(milliseconds: 300),
+              padding: EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: _isConnected ? Color(0xFF26DE81) : Color(0xFFFF6B6B),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  SizedBox(width: 6),
+                  Text(
+                    _isConnected ? 'Online' : 'Offline',
+                    style: GoogleFonts.poppins(
+                      fontSize: 11,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
         ),
         actions: [
           PopupMenuButton<String>(
-            icon: Icon(Icons.more_vert, color: Colors.white),
+            icon: Icon(Icons.more_vert_rounded, color: Colors.white),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
             onSelected: (value) {
               if (value == 'Logout') {
-                _socketSubscription?.cancel();  // FIXED: Cancel subscription before closing
+                _socketSubscription?.cancel();
                 widget.socket?.close();
                 Navigator.pushReplacement(
                   context,
@@ -398,7 +430,16 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
               }
             },
             itemBuilder: (context) => [
-              PopupMenuItem(value: 'Logout', child: Text('Logout')),
+              PopupMenuItem(
+                value: 'Logout',
+                child: Row(
+                  children: [
+                    Icon(Icons.logout, color: Color(0xFF6C63FF), size: 20),
+                    SizedBox(width: 10),
+                    Text('Logout', style: GoogleFonts.poppins()),
+                  ],
+                ),
+              ),
             ],
           ),
         ],
@@ -408,11 +449,29 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
+                  TweenAnimationBuilder<double>(
+                    duration: Duration(seconds: 2),
+                    tween: Tween(begin: 0.0, end: 1.0),
+                    builder: (context, value, child) {
+                      return Transform.rotate(
+                        angle: value * 2 * 3.14159,
+                        child: child,
+                      );
+                    },
+                    onEnd: () => setState(() {}),
+                    child: CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation(Color(0xFF6C63FF)),
+                      strokeWidth: 3,
+                    ),
+                  ),
+                  SizedBox(height: 24),
                   Text(
-                    'Waiting for users...',
-                    style: TextStyle(fontSize: 16, color: Colors.grey),
+                    'Connecting to server...',
+                    style: GoogleFonts.poppins(
+                      fontSize: 16,
+                      color: Colors.grey[600],
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ],
               ),
@@ -427,25 +486,60 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware {
                 final lastMessage = _lastMessages[chatKey] ??
                     (isGroup ? 'No messages' : 'Start chat!');
 
-                return ChatListTile(
-                  name: chatName,
-                  message: lastMessage,
-                  time: 'Now',
-                  unreadCount: unreadCount,
-                  avatarColor: _getAvatarColor(index),
-                  isGroup: isGroup,
-                  onTap: () => _openChat(chatKey),
+                return TweenAnimationBuilder<double>(
+                  duration: Duration(milliseconds: 300 + (index * 50)),
+                  tween: Tween(begin: 0.0, end: 1.0),
+                  builder: (context, value, child) {
+                    return Opacity(
+                      opacity: value,
+                      child: Transform.translate(
+                        offset: Offset(0, 50 * (1 - value)),
+                        child: child,
+                      ),
+                    );
+                  },
+                  child: ChatListTile(
+                    name: chatName,
+                    message: lastMessage,
+                    time: 'Now',
+                    unreadCount: unreadCount,
+                    avatarColor: _getAvatarColor(index),
+                    isGroup: isGroup,
+                    onTap: () => _openChat(chatKey),
+                  ),
                 );
               },
             ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: Color(0xFF25D366),
-        onPressed: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Tap a user to chat!')),
-          );
-        },
-        child: Icon(Icons.chat, color: Colors.white),
+      floatingActionButton: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF6C63FF), Color(0xFF8B7FFF)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Color(0xFF6C63FF).withOpacity(0.4),
+              blurRadius: 15,
+              offset: Offset(0, 8),
+            ),
+          ],
+        ),
+        child: FloatingActionButton(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          onPressed: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Tap a chat to start messaging!', style: GoogleFonts.poppins()),
+                backgroundColor: Color(0xFF6C63FF),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          },
+          child: Icon(Icons.chat_bubble_rounded, color: Colors.white),
+        ),
       ),
     );
   }
@@ -476,27 +570,54 @@ class ChatListTile extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Container(
-        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        margin: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: EdgeInsets.all(16),
         decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(color: Colors.grey[200]!, width: 1),
-          ),
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.03),
+              blurRadius: 10,
+              offset: Offset(0, 4),
+            ),
+          ],
         ),
         child: Row(
           children: [
-            CircleAvatar(
-              radius: 28,
-              backgroundColor: avatarColor,
-              child: isGroup
-                  ? Icon(Icons.group, color: Colors.white, size: 28)
-                  : Text(
-                      name[0].toUpperCase(),
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                      ),
+            Hero(
+              tag: 'avatar_${isGroup ? "group" : name}',
+              child: Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: [avatarColor, avatarColor.withOpacity(0.7)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: avatarColor.withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: Offset(0, 4),
                     ),
+                  ],
+                ),
+                child: CircleAvatar(
+                  radius: 28,
+                  backgroundColor: Colors.transparent,
+                  child: isGroup
+                      ? Icon(Icons.group_rounded, color: Colors.white, size: 28)
+                      : Text(
+                          name[0].toUpperCase(),
+                          style: GoogleFonts.poppins(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                ),
+              ),
             ),
             SizedBox(width: 16),
             Expanded(
@@ -509,7 +630,7 @@ class ChatListTile extends StatelessWidget {
                       Expanded(
                         child: Text(
                           name,
-                          style: TextStyle(
+                          style: GoogleFonts.poppins(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
                             color: Colors.black87,
@@ -519,16 +640,17 @@ class ChatListTile extends StatelessWidget {
                       ),
                       Text(
                         time,
-                        style: TextStyle(
+                        style: GoogleFonts.poppins(
                           fontSize: 12,
                           color: unreadCount > 0
-                              ? Color(0xFF25D366)
-                              : Colors.grey,
+                              ? Color(0xFF6C63FF)
+                              : Colors.grey[400],
+                          fontWeight: unreadCount > 0 ? FontWeight.w600 : FontWeight.normal,
                         ),
                       ),
                     ],
                   ),
-                  SizedBox(height: 4),
+                  SizedBox(height: 6),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -537,9 +659,10 @@ class ChatListTile extends StatelessWidget {
                           message,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
+                          style: GoogleFonts.poppins(
                             fontSize: 14,
-                            color: Colors.grey[600],
+                            color: unreadCount > 0 ? Colors.black87 : Colors.grey[600],
+                            fontWeight: unreadCount > 0 ? FontWeight.w500 : FontWeight.normal,
                           ),
                         ),
                       ),
@@ -547,17 +670,28 @@ class ChatListTile extends StatelessWidget {
                         Container(
                           margin: EdgeInsets.only(left: 8),
                           padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          constraints: BoxConstraints(minWidth: 20),
+                          constraints: BoxConstraints(minWidth: 24),
                           decoration: BoxDecoration(
-                            color: Color(0xFF25D366),
+                            gradient: LinearGradient(
+                              colors: [Color(0xFF6C63FF), Color(0xFF8B7FFF)],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
                             borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Color(0xFF6C63FF).withOpacity(0.3),
+                                blurRadius: 8,
+                                offset: Offset(0, 4),
+                              ),
+                            ],
                           ),
                           child: Text(
-                            unreadCount > 99 ? '99+' : '$unreadCount',  // FIXED: Cap display at 99+
+                            unreadCount > 99 ? '99+' : '$unreadCount',
                             textAlign: TextAlign.center,
-                            style: TextStyle(
+                            style: GoogleFonts.poppins(
                               color: Colors.white,
-                              fontSize: 12,
+                              fontSize: 11,
                               fontWeight: FontWeight.bold,
                             ),
                           ),

@@ -4,8 +4,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:open_file/open_file.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:sajilo_chat/utilities.dart';
-import 'package:sajilo_chat/chat_history_handler.dart'; // NEW: History handler
+import 'package:sajilo_chat/chat_history_handler.dart';
 import 'message_bubble.dart';
 import 'file_transfer_handler.dart';
 
@@ -13,21 +14,21 @@ class ChatScreen extends StatefulWidget {
   final SocketWrapper socket;
   final String username;
   final String chatWith;
-  final ChatHistoryHandler historyHandler; // NEW: History handler parameter
+  final ChatHistoryHandler historyHandler;
 
   const ChatScreen({
     super.key,
     required this.socket,
     required this.username,
     required this.chatWith,
-    required this.historyHandler, // NEW: Required parameter
+    required this.historyHandler,
   });
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<Map<String, dynamic>> _messages = [];
@@ -40,8 +41,13 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _showFileProgress = false;
   String _transferFileName = '';
   
-  // NEW: History loading state
+  // History loading state
   bool _historyLoaded = false;
+  
+  // ✨ NEW: Typing indicator state
+  bool _otherUserTyping = false;
+  Timer? _typingTimer;
+  Timer? _typingDebouncer;
 
   @override
   void initState() {
@@ -73,8 +79,11 @@ class _ChatScreenState extends State<ChatScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('File saved: $fileName'),
+              backgroundColor: Color(0xFF6C63FF),
+              behavior: SnackBarBehavior.floating,
               action: SnackBarAction(
                 label: 'OPEN',
+                textColor: Colors.white,
                 onPressed: () => _openFile(filePath),
               ),
               duration: const Duration(seconds: 5),
@@ -85,16 +94,19 @@ class _ChatScreenState extends State<ChatScreen> {
       onError: (error) {
         setState(() => _showFileProgress = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('File transfer error: $error')),
+          SnackBar(
+            content: Text('File transfer error: $error'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
         );
       },
     );
     
     _setupListener();
-    _requestHistory(); // NEW: Request history on init
+    _requestHistory();
   }
 
-  // NEW: Request chat history
   void _requestHistory() {
     print('[ChatScreen] Requesting history for ${widget.chatWith}');
     widget.historyHandler.requestHistory(widget.chatWith);
@@ -131,7 +143,14 @@ class _ChatScreenState extends State<ChatScreen> {
             else if (type == 'file_transfer_end') {
               _fileHandler.handleTransferEnd(jsonData);
             }
-            // NEW: History handling
+            // ✨ NEW: Typing indicator
+            else if (type == 'typing') {
+              final from = jsonData['from'];
+              if (from == widget.chatWith || (widget.chatWith == 'group' && from != widget.username)) {
+                _handleTypingIndicator();
+              }
+            }
+            // History handling
             else if (type == 'history') {
               final historyMessages = widget.historyHandler.processHistoryData(jsonData);
               setState(() {
@@ -152,7 +171,6 @@ class _ChatScreenState extends State<ChatScreen> {
               setState(() {
                 _messages.add(newMessage);
               });
-              // NEW: Add to history cache
               widget.historyHandler.addMessageToCache('group', newMessage);
               _scrollToBottom();
             } 
@@ -171,7 +189,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 setState(() {
                   _messages.add(newMessage);
                 });
-                // NEW: Add to history cache
                 widget.historyHandler.addMessageToCache(widget.chatWith, newMessage);
                 _scrollToBottom();
               }
@@ -185,8 +202,32 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // ✨ NEW: Handle typing indicator
+  void _handleTypingIndicator() {
+    setState(() => _otherUserTyping = true);
+    _typingTimer?.cancel();
+    _typingTimer = Timer(Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() => _otherUserTyping = false);
+      }
+    });
+  }
+
+  // ✨ NEW: Send typing indicator
+  void _sendTypingIndicator() {
+    _typingDebouncer?.cancel();
+    _typingDebouncer = Timer(Duration(milliseconds: 500), () {
+      final typingData = widget.chatWith == 'group'
+          ? {'type': 'typing', 'from': widget.username, 'to': 'group'}
+          : {'type': 'typing', 'from': widget.username, 'to': widget.chatWith};
+      
+      final msg = '${jsonEncode(typingData)}\n';
+      widget.socket.write(utf8.encode(msg));
+    });
+  }
+
   void _scrollToBottom() {
-    Future.delayed(const Duration(milliseconds: 100), () {
+    Future.delayed(const Duration(milliseconds: 150), () {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
@@ -228,6 +269,7 @@ class _ChatScreenState extends State<ChatScreen> {
           SnackBar(
             content: Text('Could not open file: ${result.message}'),
             backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
           ),
         );
       } else {
@@ -240,52 +282,59 @@ class _ChatScreenState extends State<ChatScreen> {
         SnackBar(
           content: Text('Error opening file: $e'),
           backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
         ),
       );
     }
   }
-  
+
   Future<void> _pickAndSendFile() async {
-    if (widget.chatWith == 'group') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('File sharing only available in direct messages')),
-      );
-      return;
-    }
-    
     try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles();
+      final result = await FilePicker.platform.pickFiles();
       
-      if (result != null) {
-        final file = File(result.files.single.path!);
-        final fileSize = await file.length();
-        final fileName = result.files.single.name;
+      if (result != null && result.files.isNotEmpty) {
+        final platformFile = result.files.first;
+        final filePath = platformFile.path;
         
-        if (fileSize > 50 * 1024 * 1024) {
-          if (!mounted) return;
+        if (filePath == null) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('File too large (max 50MB)')),
+            SnackBar(content: Text('Could not access file')),
           );
           return;
         }
         
-        if (!mounted) return;
+        final file = File(filePath);
+        final fileSize = await file.length();
+        final fileName = platformFile.name;
+        
+        const maxSize = 50 * 1024 * 1024; // 50 MB
+        if (fileSize > maxSize) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('File too large. Maximum size: 50 MB'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          return;
+        }
+        
         final confirmed = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('Send File?'),
+            title: Text('Send File?', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
             content: Text(
               'Send "$fileName" (${(fileSize / 1024).toStringAsFixed(1)} KB) to ${widget.chatWith}?\n\n'
-              'Note: Recipient must be online.'
+              'Note: Recipient must be online.',
+              style: GoogleFonts.poppins(),
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
+                child: Text('Cancel', style: GoogleFonts.poppins(color: Colors.grey)),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context, true),
-                child: const Text('Send'),
+                child: Text('Send', style: GoogleFonts.poppins(color: Color(0xFF6C63FF), fontWeight: FontWeight.w600)),
               ),
             ],
           ),
@@ -321,132 +370,232 @@ class _ChatScreenState extends State<ChatScreen> {
     _messageController.dispose();
     _scrollController.dispose();
     _fileHandler.dispose();
+    _typingTimer?.cancel();
+    _typingDebouncer?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // ✨ Distinct colors for Group vs DM
+    final bool isGroup = widget.chatWith == 'group';
+    final Color primaryColor = isGroup ? Color(0xFF6C63FF) : Color(0xFF8B7FFF); // Purple for group, lighter for DM
+    final Color accentColor = isGroup ? Color(0xFF5A52D5) : Color(0xFF9D8FFF);
+    
     return Scaffold(
+      backgroundColor: Color(0xFFF5F5FA), // Light purple-gray background
       appBar: AppBar(
-        backgroundColor: const Color(0xFF075E54),
+        backgroundColor: primaryColor,
+        elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.white),
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(
           children: [
-            CircleAvatar(
-              radius: 20,
-              backgroundColor: Colors.white,
-              child: widget.chatWith == 'group'
-                  ? const Icon(Icons.group, color: Color(0xFF075E54))
-                  : Text(
-                      widget.chatWith[0].toUpperCase(),
-                      style: const TextStyle(color: Color(0xFF075E54)),
-                    ),
+            // ✨ Animated avatar
+            Hero(
+              tag: 'avatar_${widget.chatWith}',
+              child: CircleAvatar(
+                radius: 20,
+                backgroundColor: Colors.white,
+                child: widget.chatWith == 'group'
+                    ? Icon(Icons.group, color: primaryColor, size: 24)
+                    : Text(
+                        widget.chatWith[0].toUpperCase(),
+                        style: GoogleFonts.poppins(
+                          color: primaryColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+              ),
             ),
             const SizedBox(width: 12),
-            Text(
-              widget.chatWith == 'group' ? 'Group Chat' : widget.chatWith,
-              style: const TextStyle(color: Colors.white),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.chatWith == 'group' ? 'Group Chat' : widget.chatWith,
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  // ✨ Typing indicator in appbar
+                  if (_otherUserTyping)
+                    Text(
+                      'typing...',
+                      style: GoogleFonts.poppins(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                ],
+              ),
             ),
           ],
         ),
       ),
-      body: Container(
-        color: const Color(0xFFECE5DD),
-        child: Column(
-          children: [
-            // NEW: History loading indicator
-            if (!_historyLoaded)
-              Container(
-                padding: const EdgeInsets.all(8),
-                color: Colors.amber[100],
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: const [
-                    SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    SizedBox(width: 8),
-                    Text('Loading history...', style: TextStyle(fontSize: 12)),
-                  ],
+      body: Column(
+        children: [
+          // History loading indicator
+          if (!_historyLoaded)
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: accentColor.withOpacity(0.1),
+                border: Border(
+                  bottom: BorderSide(color: accentColor.withOpacity(0.2)),
                 ),
               ),
-            
-            // File transfer progress
-            if (_showFileProgress)
-              Container(
-                padding: const EdgeInsets.all(12),
-                color: Colors.blue[50],
-                child: Column(
-                  children: [
-                    Row(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation(primaryColor),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Loading history...',
+                    style: GoogleFonts.poppins(fontSize: 13, color: primaryColor),
+                  ),
+                ],
+              ),
+            ),
+          
+          // File transfer progress
+          if (_showFileProgress)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: primaryColor.withOpacity(0.1),
+                    blurRadius: 10,
+                    offset: Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.file_upload_outlined, size: 24, color: primaryColor),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _transferFileName,
+                              style: GoogleFonts.poppins(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Sending file...',
+                              style: GoogleFonts.poppins(
+                                fontSize: 12,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Text(
+                        '${(_fileTransferProgress * 100).toStringAsFixed(0)}%',
+                        style: GoogleFonts.poppins(
+                          fontWeight: FontWeight.bold,
+                          color: primaryColor,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: LinearProgressIndicator(
+                      value: _fileTransferProgress,
+                      backgroundColor: Colors.grey[200],
+                      valueColor: AlwaysStoppedAnimation(primaryColor),
+                      minHeight: 6,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          
+          // Messages list
+          Expanded(
+            child: _messages.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(Icons.file_upload, size: 20, color: Colors.blue),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _transferFileName,
-                            style: const TextStyle(fontSize: 14),
-                            overflow: TextOverflow.ellipsis,
+                        Icon(
+                          isGroup ? Icons.group_outlined : Icons.chat_bubble_outline,
+                          size: 80,
+                          color: Colors.grey[300],
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          'No messages yet',
+                          style: GoogleFonts.poppins(
+                            fontSize: 20,
+                            color: Colors.grey[500],
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
+                        const SizedBox(height: 8),
                         Text(
-                          '${(_fileTransferProgress * 100).toStringAsFixed(0)}%',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blue,
+                          isGroup ? 'Start the group conversation!' : 'Say hello!',
+                          style: GoogleFonts.poppins(
+                            fontSize: 14,
+                            color: Colors.grey[400],
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    LinearProgressIndicator(value: _fileTransferProgress),
-                  ],
-                ),
-              ),
-            
-            // Messages list
-            Expanded(
-              child: _messages.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.chat_bubble_outline,
-                            size: 80,
-                            color: Colors.grey[400],
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'No messages yet',
-                            style: TextStyle(
-                              fontSize: 18,
-                              color: Colors.grey[600],
+                  )
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                    itemCount: _messages.length + (_otherUserTyping ? 1 : 0),
+                    itemBuilder: (context, index) {
+                      // ✨ Show typing indicator at end
+                      if (_otherUserTyping && index == _messages.length) {
+                        return _buildTypingIndicator(primaryColor);
+                      }
+                      
+                      final msg = _messages[index];
+                      // ✨ Fade-in animation
+                      return TweenAnimationBuilder<double>(
+                        duration: Duration(milliseconds: 300),
+                        tween: Tween(begin: 0.0, end: 1.0),
+                        builder: (context, value, child) {
+                          return Opacity(
+                            opacity: value,
+                            child: Transform.translate(
+                              offset: Offset(0, 20 * (1 - value)),
+                              child: child,
                             ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Start the conversation!',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey[400],
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  : ListView.builder(
-                      controller: _scrollController,
-                      padding: const EdgeInsets.all(8),
-                      itemCount: _messages.length,
-                      itemBuilder: (context, index) {
-                        final msg = _messages[index];
-                        return MessageBubble(
+                          );
+                        },
+                        child: MessageBubble(
                           message: msg['message'],
                           isMe: msg['isMe'],
                           sender: msg['from'],
@@ -454,59 +603,157 @@ class _ChatScreenState extends State<ChatScreen> {
                           isFile: msg['isFile'] ?? false,
                           fileName: msg['fileName'],
                           filePath: msg['filePath'],
+                          isGroupChat: isGroup,
+                          bubbleColor: primaryColor,
                           onFileTap: msg['isFile'] == true && 
                                      msg['filePath'] != null && 
                                      msg['filePath'].toString().isNotEmpty
                               ? () => _openFile(msg['filePath'])
                               : null,
-                        );
-                      },
-                    ),
-            ),
-            
-            // Input bar
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          
+          // Input bar
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            decoration: BoxDecoration(
               color: Colors.white,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 10,
+                  offset: Offset(0, -4),
+                ),
+              ],
+            ),
+            child: SafeArea(
               child: Row(
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.attach_file, color: Color(0xFF075E54)),
+                    icon: Icon(Icons.attach_file_rounded, color: primaryColor),
                     onPressed: _pickAndSendFile,
                     tooltip: 'Send file',
                   ),
                   
                   Expanded(
-                    child: TextField(
-                      controller: _messageController,
-                      decoration: InputDecoration(
-                        hintText: 'Type a message',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(25),
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
-                        ),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Color(0xFFF5F5FA),
+                        borderRadius: BorderRadius.circular(25),
                       ),
-                      onSubmitted: (_) => _sendMessage(),
+                      child: TextField(
+                        controller: _messageController,
+                        style: GoogleFonts.poppins(),
+                        decoration: InputDecoration(
+                          hintText: 'Type a message',
+                          hintStyle: GoogleFonts.poppins(color: Colors.grey[400]),
+                          border: InputBorder.none,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 12,
+                          ),
+                        ),
+                        onChanged: (text) {
+                          if (text.isNotEmpty) {
+                            _sendTypingIndicator();
+                          }
+                        },
+                        onSubmitted: (_) => _sendMessage(),
+                      ),
                     ),
                   ),
                   
                   const SizedBox(width: 8),
-                  CircleAvatar(
-                    backgroundColor: const Color(0xFF25D366),
+                  Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [primaryColor, accentColor],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: primaryColor.withOpacity(0.3),
+                          blurRadius: 8,
+                          offset: Offset(0, 4),
+                        ),
+                      ],
+                    ),
                     child: IconButton(
-                      icon: const Icon(Icons.send, color: Colors.white, size: 20),
+                      icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
                       onPressed: _sendMessage,
                     ),
                   ),
                 ],
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
+    );
+  }
+
+  // ✨ Typing indicator widget
+  Widget _buildTypingIndicator(Color color) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 16, bottom: 8, top: 4),
+      child: Row(
+        children: [
+          Container(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 5,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildDot(color, 0),
+                SizedBox(width: 4),
+                _buildDot(color, 150),
+                SizedBox(width: 4),
+                _buildDot(color, 300),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDot(Color color, int delay) {
+    return TweenAnimationBuilder<double>(
+      duration: Duration(milliseconds: 600),
+      tween: Tween(begin: 0.0, end: 1.0),
+      builder: (context, value, child) {
+        return Transform.translate(
+          offset: Offset(0, -4 * (0.5 - (value - 0.5).abs())),
+          child: Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.6 + 0.4 * value),
+              shape: BoxShape.circle,
+            ),
+          ),
+        );
+      },
+      onEnd: () {
+        if (mounted && _otherUserTyping) {
+          setState(() {}); // Restart animation
+        }
+      },
     );
   }
 }

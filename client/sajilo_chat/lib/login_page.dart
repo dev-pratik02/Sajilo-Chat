@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:async';
 import 'package:http/http.dart' as http;
+import 'package:google_fonts/google_fonts.dart';
 
 import 'package:sajilo_chat/utilities.dart';
 import 'package:sajilo_chat/chat_list.dart';
@@ -14,7 +15,7 @@ class LoginPage extends StatefulWidget {
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
 
   final _usernameController = TextEditingController();
@@ -24,8 +25,34 @@ class _LoginPageState extends State<LoginPage> {
 
   bool _isLoading = false;
   bool _isRegisterMode = false;
+  
+  late AnimationController _logoAnimationController;
+  late Animation<double> _logoAnimation;
 
-  // REGISTER - Changed to port 5001
+  @override
+  void initState() {
+    super.initState();
+    _logoAnimationController = AnimationController(
+      duration: Duration(milliseconds: 1500),
+      vsync: this,
+    );
+    _logoAnimation = CurvedAnimation(
+      parent: _logoAnimationController,
+      curve: Curves.elasticOut,
+    );
+    _logoAnimationController.forward();
+  }
+
+  @override
+  void dispose() {
+    _logoAnimationController.dispose();
+    _usernameController.dispose();
+    _passwordController.dispose();
+    _serverController.dispose();
+    _portController.dispose();
+    super.dispose();
+  }
+
   Future<void> _register() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -37,7 +64,7 @@ class _LoginPageState extends State<LoginPage> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://$host:5001/auth/register'), // CHANGED: 5000 → 5001
+        Uri.parse('http://$host:5001/auth/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'username': username, 'password': password}),
       );
@@ -45,9 +72,17 @@ class _LoginPageState extends State<LoginPage> {
       if (response.statusCode == 201) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('✅ Registration successful! You can now login.'),
-            backgroundColor: Colors.green,
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 12),
+                Text('Registration successful!', style: GoogleFonts.poppins()),
+              ],
+            ),
+            backgroundColor: Color(0xFF26DE81),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             duration: Duration(seconds: 3),
           ),
         );
@@ -60,8 +95,16 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('❌ Error: $e'),
-          backgroundColor: Colors.red,
+          content: Row(
+            children: [
+              Icon(Icons.error_outline, color: Colors.white),
+              SizedBox(width: 12),
+              Expanded(child: Text('Error: $e', style: GoogleFonts.poppins())),
+            ],
+          ),
+          backgroundColor: Color(0xFFFF6B6B),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         ),
       );
     } finally {
@@ -69,7 +112,6 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  // LOGIN + SOCKET CONNECT - Changed to port 5001
   Future<void> _loginAndConnect() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);
@@ -80,10 +122,9 @@ class _LoginPageState extends State<LoginPage> {
       final username = _usernameController.text.trim();
       final password = _passwordController.text.trim();
 
-      // LOGIN VIA FLASK - Changed to port 5001
       final loginResponse = await http
           .post(
-            Uri.parse('http://$host:5001/auth/login'), // CHANGED: 5000 → 5001
+            Uri.parse('http://$host:5001/auth/login'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'username': username, 'password': password}),
           )
@@ -96,7 +137,6 @@ class _LoginPageState extends State<LoginPage> {
 
       final accessToken = jsonDecode(loginResponse.body)['access_token'];
 
-      // CONNECT TO CHAT SERVER (port 5050)
       final socket = await Socket.connect(
         host,
         port,
@@ -105,7 +145,6 @@ class _LoginPageState extends State<LoginPage> {
 
       final wrappedSocket = SocketWrapper(socket);
 
-      // HANDLE AUTH HANDSHAKE
       late StreamSubscription sub;
       String buffer = '';
 
@@ -133,14 +172,18 @@ class _LoginPageState extends State<LoginPage> {
               if (!mounted) return;
               Navigator.pushReplacement(
                 context,
-                MaterialPageRoute(
-                  builder: (context) => ChatsListPage(
+                PageRouteBuilder(
+                  pageBuilder: (context, animation, secondaryAnimation) => ChatsListPage(
                     socket: wrappedSocket,
                     username: username,
                     serverHost: host,
                     serverPort: port,
                     accessToken: accessToken,
                   ),
+                  transitionsBuilder: (context, animation, secondaryAnimation, child) {
+                    return FadeTransition(opacity: animation, child: child);
+                  },
+                  transitionDuration: Duration(milliseconds: 500),
                 ),
               );
             }
@@ -156,8 +199,16 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('❌ Error: $e'),
-          backgroundColor: Colors.red,
+          content: Row(
+            children: [
+              Icon(Icons.error_outline, color: Colors.white),
+              SizedBox(width: 12),
+              Expanded(child: Text('Error: $e', style: GoogleFonts.poppins())),
+            ],
+          ),
+          backgroundColor: Color(0xFFFF6B6B),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         ),
       );
     }
@@ -168,179 +219,295 @@ class _LoginPageState extends State<LoginPage> {
     return Scaffold(
       body: Stack(
         children: [
+          // ✨ Gradient background
           Container(
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [Color(0xFF667eea), Color(0xFF764ba2)],
+                colors: [
+                  Color(0xFF6C63FF),
+                  Color(0xFF8B7FFF),
+                  Color(0xFF9D8FFF),
+                ],
               ),
             ),
-            child: SafeArea(
-              child: Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(horizontal: 32.0),
-                  child: Form(
-                    key: _formKey,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(20),
+          ),
+          
+          // ✨ Decorative circles
+          Positioned(
+            top: -100,
+            right: -100,
+            child: Container(
+              width: 300,
+              height: 300,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.1),
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: -50,
+            left: -50,
+            child: Container(
+              width: 200,
+              height: 200,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.1),
+              ),
+            ),
+          ),
+          
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // ✨ Animated logo
+                      ScaleTransition(
+                        scale: _logoAnimation,
+                        child: Container(
+                          padding: const EdgeInsets.all(24),
                           decoration: BoxDecoration(
                             color: Colors.white,
                             shape: BoxShape.circle,
-                            boxShadow: const [
+                            boxShadow: [
                               BoxShadow(
-                                color: Colors.black26,
-                                blurRadius: 20,
-                                offset: Offset(0, 10),
+                                color: Colors.black.withOpacity(0.2),
+                                blurRadius: 30,
+                                offset: Offset(0, 15),
                               ),
                             ],
                           ),
-                          child: const Icon(
-                            Icons.chat_bubble_outline,
+                          child: Icon(
+                            Icons.chat_bubble_rounded,
                             size: 60,
-                            color: Color(0xFF667eea),
+                            color: Color(0xFF6C63FF),
                           ),
                         ),
-                        const SizedBox(height: 30),
-                        const Text(
-                          'Sajilo Chat',
-                          style: TextStyle(
-                            fontSize: 36,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                            letterSpacing: 1.5,
-                          ),
+                      ),
+                      const SizedBox(height: 40),
+                      
+                      Text(
+                        'Sajilo Chat',
+                        style: GoogleFonts.poppins(
+                          fontSize: 40,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          letterSpacing: 1.2,
                         ),
-                        const SizedBox(height: 10),
-                        Text(
-                          _isRegisterMode
-                              ? 'Create a new account'
-                              : 'Connect to start chatting!',
-                          style: const TextStyle(
-                              fontSize: 18, color: Colors.white70),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        _isRegisterMode
+                            ? 'Create your account'
+                            : 'Welcome back!',
+                        style: GoogleFonts.poppins(
+                          fontSize: 16,
+                          color: Colors.white.withOpacity(0.9),
+                          fontWeight: FontWeight.w400,
                         ),
-                        const SizedBox(height: 50),
-                        _buildTextField(
-                          controller: _usernameController,
-                          hintText: 'Username',
-                          icon: Icons.person,
-                          validator: (v) =>
-                              v?.isEmpty ?? true ? 'Enter username' : null,
-                        ),
-                        const SizedBox(height: 20),
-                        _buildTextField(
-                          controller: _passwordController,
-                          hintText: 'Password',
-                          icon: Icons.lock,
-                          obscureText: true,
-                          validator: (v) =>
-                              (v?.length ?? 0) < 8 ? 'Password too short' : null,
-                        ),
-                        const SizedBox(height: 20),
-                        _buildTextField(
-                          controller: _serverController,
-                          hintText: 'Server IP',
-                          icon: Icons.dns,
-                          validator: (v) =>
-                              v?.isEmpty ?? true ? 'Enter server IP' : null,
-                        ),
-                        const SizedBox(height: 20),
-                        _buildTextField(
-                          controller: _portController,
-                          hintText: 'Port',
-                          icon: Icons.power,
-                          keyboardType: TextInputType.number,
-                          validator: (v) => v?.isEmpty ?? true ? 'Enter port' : null,
-                        ),
-                        const SizedBox(height: 30),
-                        SizedBox(
-                          width: double.infinity,
-                          height: 55,
-                          child: ElevatedButton(
-                            onPressed: _isLoading
-                                ? null
-                                : (_isRegisterMode ? _register : _loginAndConnect),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.white,
-                              foregroundColor: const Color(0xFF667eea),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(15),
-                              ),
-                              elevation: 5,
-                            ),
-                            child: Text(
-                              _isRegisterMode ? 'Register' : 'Login & Connect',
-                              style: const TextStyle(
-                                  fontSize: 18, fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        GestureDetector(
-                          onTap: _isLoading
+                      ),
+                      const SizedBox(height: 50),
+                      
+                      _buildTextField(
+                        controller: _usernameController,
+                        hintText: 'Username',
+                        icon: Icons.person_rounded,
+                        validator: (v) =>
+                            v?.isEmpty ?? true ? 'Enter username' : null,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildTextField(
+                        controller: _passwordController,
+                        hintText: 'Password',
+                        icon: Icons.lock_rounded,
+                        obscureText: true,
+                        validator: (v) =>
+                            (v?.length ?? 0) < 8 ? 'Password too short' : null,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildTextField(
+                        controller: _serverController,
+                        hintText: 'Server IP',
+                        icon: Icons.dns_rounded,
+                        validator: (v) =>
+                            v?.isEmpty ?? true ? 'Enter server IP' : null,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildTextField(
+                        controller: _portController,
+                        hintText: 'Port',
+                        icon: Icons.power_rounded,
+                        keyboardType: TextInputType.number,
+                        validator: (v) => v?.isEmpty ?? true ? 'Enter port' : null,
+                      ),
+                      const SizedBox(height: 32),
+                      
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: ElevatedButton(
+                          onPressed: _isLoading
                               ? null
-                              : () {
-                                  setState(() => _isRegisterMode = !_isRegisterMode);
-                                },
+                              : (_isRegisterMode ? _register : _loginAndConnect),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Color(0xFF6C63FF),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            elevation: 8,
+                            shadowColor: Colors.black.withOpacity(0.3),
+                          ),
                           child: Text(
-                            _isRegisterMode
-                                ? 'Already have an account? Login'
-                                : 'Do not have an account? Register',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              decoration: TextDecoration.underline,
+                            _isRegisterMode ? 'Create Account' : 'Login & Connect',
+                            style: GoogleFonts.poppins(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.5,
                             ),
                           ),
                         ),
-                        const SizedBox(height: 20),
-                        if (!_isRegisterMode)
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Column(
-                              children: const [
-                                Text(
-                                  '💡 Quick Start',
-                                  style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold),
-                                ),
-                                SizedBox(height: 5),
-                                Text(
-                                  '1. Start Flask: python run.py (port 5001)',
-                                  style: TextStyle(color: Colors.white70, fontSize: 11),
-                                ),
-                                Text(
-                                  '2. Start Chat: python dm_server.py (port 5050)',
-                                  style: TextStyle(color: Colors.white70, fontSize: 11),
-                                ),
-                                Text(
-                                  '3. Use "localhost" for same PC',
-                                  style: TextStyle(color: Colors.white70, fontSize: 11),
-                                ),
-                              ],
-                            ),
+                      ),
+                      const SizedBox(height: 24),
+                      
+                      GestureDetector(
+                        onTap: _isLoading
+                            ? null
+                            : () {
+                                setState(() => _isRegisterMode = !_isRegisterMode);
+                              },
+                        child: Text(
+                          _isRegisterMode
+                              ? 'Already have an account? Login'
+                              : 'Don\'t have an account? Register',
+                          style: GoogleFonts.poppins(
+                            color: const Color.fromARGB(255, 252, 252, 252),
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
                           ),
-                      ],
-                    ),
+                        ),
+                      ),
+                      
+                      // if (!_isRegisterMode) ...[
+                      //   const SizedBox(height: 30),
+                      //   Container(
+                      //     padding: const EdgeInsets.all(16),
+                      //     decoration: BoxDecoration(
+                      //       color: Colors.white.withOpacity(0.15),
+                      //       borderRadius: BorderRadius.circular(16),
+                      //       border: Border.all(
+                      //         color: Colors.white.withOpacity(0.3),
+                      //         width: 1,
+                      //       ),
+                      //     ),
+                      //     child: Column(
+                      //       children: [
+                      //         Row(
+                      //           mainAxisSize: MainAxisSize.min,
+                      //           children: [
+                      //             Icon(Icons.lightbulb_rounded, color: Colors.white, size: 20),
+                      //             SizedBox(width: 8),
+                      //             Text(
+                      //               'Quick Start Guide',
+                      //               style: GoogleFonts.poppins(
+                      //                 color: Colors.white,
+                      //                 fontWeight: FontWeight.w600,
+                      //                 fontSize: 14,
+                      //               ),
+                      //             ),
+                      //           ],
+                      //         ),
+                      //         SizedBox(height: 12),
+                      //         _buildQuickStartItem('1', 'Start Flask: python run.py (port 5001)'),
+                      //         _buildQuickStartItem('2', 'Start Chat: python dm_server.py (port 5050)'),
+                      //         _buildQuickStartItem('3', 'Use "localhost" for same PC'),
+                      //       ],
+                      //     ),
+                      //   ),
+                      // ],
+                    ],
                   ),
                 ),
               ),
             ),
           ),
+          
+          // Loading overlay
           if (_isLoading)
             Container(
               color: Colors.black54,
-              child: const Center(
-                child: CircularProgressIndicator(color: Colors.white),
+              child: Center(
+                child: Container(
+                  padding: EdgeInsets.all(32),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation(Color(0xFF6C63FF)),
+                      ),
+                      SizedBox(height: 20),
+                      Text(
+                        _isRegisterMode ? 'Creating account...' : 'Connecting...',
+                        style: GoogleFonts.poppins(
+                          color: Color(0xFF6C63FF),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuickStartItem(String number, String text) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Container(
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Text(
+                number,
+                style: GoogleFonts.poppins(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: GoogleFonts.poppins(
+                color: Colors.white.withOpacity(0.9),
+                fontSize: 12,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -357,12 +524,12 @@ class _LoginPageState extends State<LoginPage> {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
-        boxShadow: const [
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
           BoxShadow(
-            color: Colors.black12,
-            blurRadius: 10,
-            offset: Offset(0, 5),
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 20,
+            offset: Offset(0, 10),
           ),
         ],
       ),
@@ -370,23 +537,16 @@ class _LoginPageState extends State<LoginPage> {
         controller: controller,
         obscureText: obscureText,
         keyboardType: keyboardType,
+        style: GoogleFonts.poppins(),
         decoration: InputDecoration(
           hintText: hintText,
-          prefixIcon: Icon(icon, color: const Color(0xFF667eea)),
+          hintStyle: GoogleFonts.poppins(color: Colors.grey[400]),
+          prefixIcon: Icon(icon, color: Color(0xFF6C63FF)),
           border: InputBorder.none,
           contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
         ),
         validator: validator,
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _usernameController.dispose();
-    _passwordController.dispose();
-    _serverController.dispose();
-    _portController.dispose();
-    super.dispose();
   }
 }

@@ -14,7 +14,7 @@ class FileTransferHandler {
   IOSink? _fileSink;
   String? _currentFilePath;
   int _receivedBytes = 0;
-  int _expectedBytes = 0;  // ✅ FIX #1: Track expected size
+  int _expectedBytes = 0;  //   FIX #1: Track expected size
   
   FileTransferHandler({
     required this.onProgress,
@@ -54,7 +54,7 @@ class FileTransferHandler {
       socket.add(utf8.encode(metadataFrame));
       await socket.flush();
       
-      // ✅ FIX #2: Longer delay to ensure metadata is processed
+      //   FIX #2: Longer delay to ensure metadata is processed
       await Future.delayed(const Duration(milliseconds: 200));
       
       // 2. Stream file chunks (raw binary)
@@ -66,7 +66,7 @@ class FileTransferHandler {
         bytesSent += chunk.length;
         onProgress(bytesSent / fileSize);
         
-        // ✅ FIX #3: Small delay between chunks to prevent buffer overflow
+        //   FIX #3: Small delay between chunks to prevent buffer overflow
         if (bytesSent % (BufferSize * 10) == 0) {
           await Future.delayed(const Duration(milliseconds: 10));
         }
@@ -74,7 +74,7 @@ class FileTransferHandler {
       
       await socket.flush();
       
-      // ✅ FIX #4: Longer delay before end frame
+      //   FIX #4: Longer delay before end frame
       await Future.delayed(const Duration(milliseconds: 200));
       
       // 3. Send end frame (JSON) - REMOVED, server handles this now
@@ -109,7 +109,7 @@ class FileTransferHandler {
       final filePath = '${directory.path}/${timestamp}_$safeName';
       final file = File(filePath);
       
-      // ✅ FIX #5: Check if we can write to this location
+      //   FIX #5: Check if we can write to this location
       try {
         await file.create(recursive: true);
       } catch (e) {
@@ -123,7 +123,7 @@ class FileTransferHandler {
       _currentFilePath = filePath;
       _fileSink = file.openWrite();
       _receivedBytes = 0;
-      _expectedBytes = fileSize;  // ✅ FIX #6: Store expected size
+      _expectedBytes = fileSize;  //   FIX #6: Store expected size
       
       print('[FILE_RECV] Saving to: $filePath');
       onProgress(0.0);
@@ -144,7 +144,7 @@ class FileTransferHandler {
       return;
     }
     
-    // ✅ FIX #7: Don't try to detect end frame in chunks
+    //   FIX #7: Don't try to detect end frame in chunks
     // The server sends it separately after all file bytes
     // We rely on byte counting instead
     
@@ -176,7 +176,7 @@ class FileTransferHandler {
         }
       }
       
-      // ✅ FIX #8: Check completion by byte count, not end frame detection
+      //   FIX #8: Check completion by byte count, not end frame detection
       if (_receivedBytes >= _expectedBytes) {
         print('[FILE_RECV] All bytes received, finalizing...');
         _finalizeTransfer();
@@ -217,7 +217,7 @@ class FileTransferHandler {
       final fileName = _currentTransferMetadata?['file_name'] ?? 'unknown';
       final filePath = _currentFilePath ?? '';
       
-      // ✅ FIX #9: Verify file was saved correctly
+      //   FIX #9: Verify file was saved correctly
       final file = File(filePath);
       final actualSize = await file.length();
       

@@ -44,7 +44,7 @@ except OSError as e:
 clients = {}
 clients_lock = threading.Lock()
 
-# ✅ FIX #1: Add transfer locking to prevent message interference
+#   FIX #1: Add transfer locking to prevent message interference
 active_transfers = {}  # {sender_username: receiver_username}
 transfers_lock = threading.Lock()
 
@@ -96,7 +96,7 @@ def handle(client, username):
     file_metadata = None
     receiver_socket = None
     bytes_relayed = 0
-    expected_bytes = 0  # ✅ FIX #2: Track expected bytes precisely
+    expected_bytes = 0  #   FIX #2: Track expected bytes precisely
     
     while True:
         try:
@@ -105,7 +105,7 @@ def handle(client, username):
                 print(f"[INFO] {username} connection closed")
                 break
             
-            # ✅ FIX #3: Binary relay mode with precise byte counting
+            #   FIX #3: Binary relay mode with precise byte counting
             if in_file_transfer:
                 try:
                     # Calculate how many bytes we still need
@@ -145,7 +145,7 @@ def handle(client, username):
                         }) + '\n'
                         receiver_socket.send(end_frame.encode('utf-8'))
                         
-                        # ✅ FIX #4: Clear transfer lock
+                        #   FIX #4: Clear transfer lock
                         with transfers_lock:
                             if username in active_transfers:
                                 del active_transfers[username]
@@ -165,7 +165,7 @@ def handle(client, username):
                 except Exception as e:
                     print(f"[ERROR] File relay failed: {e}")
                     
-                    # ✅ Clear transfer lock on error
+                    #   Clear transfer lock on error
                     with transfers_lock:
                         if username in active_transfers:
                             del active_transfers[username]
@@ -201,7 +201,7 @@ def handle(client, username):
                     message_data = json.loads(line)
                     message_type = message_data.get('type')
                     
-                    # ✅ FIX #5: Handle file transfer initiation with locking
+                    #   FIX #5: Handle file transfer initiation with locking
                     if message_type == 'file_transfer_start':
                         recipient = message_data.get('receiver')
                         file_name = message_data.get('file_name')
@@ -210,7 +210,7 @@ def handle(client, username):
                         
                         print(f"[FILE] {username} wants to send '{file_name}' ({file_size} bytes) to {recipient}")
                         
-                        # ✅ Check if either user is already in a transfer
+                        #   Check if either user is already in a transfer
                         with transfers_lock:
                             if username in active_transfers:
                                 error = {
@@ -257,7 +257,7 @@ def handle(client, username):
                             client.send(json_msg.encode('utf-8'))
                             continue
                         
-                        # ✅ Enter relay mode and lock both users
+                        #   Enter relay mode and lock both users
                         in_file_transfer = True
                         file_metadata = message_data
                         bytes_relayed = 0
@@ -270,7 +270,7 @@ def handle(client, username):
                         print(f"[FILE] Entering relay mode: {file_name} ({file_size} bytes) → {recipient}")
                         print(f"[FILE] Transfer locked: {username} ↔ {recipient}")
                     
-                    # ✅ FIX #6: Block group messages during transfer
+                    #   FIX #6: Block group messages during transfer
                     elif message_type == 'group':
                         # Check if user is in active transfer
                         with transfers_lock:
@@ -296,7 +296,7 @@ def handle(client, username):
                         broadcast(broadcast_data)
                         print(f"[GROUP] {username}: {msg_text}")
                     
-                    # ✅ FIX #7: Block DMs during transfer
+                    #   FIX #7: Block DMs during transfer
                     elif message_type == 'dm':
                         recipient = message_data.get('to')
                         msg_text = message_data.get('message')
@@ -373,6 +373,28 @@ def handle(client, username):
                             print(f"[HISTORY] Sent {len(messages)} messages to {username}")
                         else:
                             print(f"[ERROR] Failed to fetch history for {username}")
+                    
+                    # ✨ NEW: Handle typing indicators
+                    elif message_type == 'typing':
+                        to_user = message_data.get('to')
+                        
+                        # Create typing indicator with correct sender
+                        typing_data = {
+                            'type': 'typing',
+                            'from': username,
+                            'to': to_user
+                        }
+                        
+                        if to_user == 'group':
+                            # Broadcast to everyone except sender
+                            broadcast(typing_data, exclude_user=username)
+                            print(f"[TYPING] {username} typing in group")
+                        else:
+                            # Send to specific user
+                            if send_to_user(to_user, typing_data):
+                                print(f"[TYPING] {username} typing to {to_user}")
+                            else:
+                                print(f"[TYPING] Failed: {to_user} not online")
                             
                 except json.JSONDecodeError as e:
                     print(f"[ERROR] JSON decode error from {username}: {e}")
@@ -381,7 +403,7 @@ def handle(client, username):
             print(f"[ERROR] Error handling {username}: {e}")
             break
     
-    # ✅ FIX #8: Cleanup - clear any active transfers
+    #   FIX #8: Cleanup - clear any active transfers
     with transfers_lock:
         if username in active_transfers:
             del active_transfers[username]
