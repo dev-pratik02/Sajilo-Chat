@@ -4,6 +4,10 @@ import json
 import jwt
 import os
 import time
+from dotenv import load_dotenv
+
+# Load environment variables from .env if present
+load_dotenv()
 from chat_history_manager import ChatHistoryManager
 
 # Configuration - use environment variables for security
