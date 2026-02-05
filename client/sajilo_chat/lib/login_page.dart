@@ -134,8 +134,13 @@ class _LoginPageState extends State<LoginPage> {
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (context) =>
-                      ChatsListPage(socket: wrappedSocket, username: username),
+                  builder: (context) => ChatsListPage(
+                    socket: wrappedSocket,
+                    username: username,
+                    serverHost: host,
+                    serverPort: port,
+                    accessToken: accessToken,
+                  ),
                 ),
               );
             }
