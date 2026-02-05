@@ -1,7 +1,3 @@
-// ============================================================================
-// lib/file_transfer_handler.dart - UPDATED with file path tracking
-// ============================================================================
-
 import 'dart:io';
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
@@ -9,15 +5,16 @@ import 'package:uuid/uuid.dart';
 
 class FileTransferHandler {
   final Function(double) onProgress;
-  final Function(String fileName, String filePath) onComplete; // CHANGED: Added filePath
+  final Function(String fileName, String filePath) onComplete;
   final Function(String) onError;
   
   // State for receiving files
   bool _isReceivingFile = false;
   Map<String, dynamic>? _currentTransferMetadata;
   IOSink? _fileSink;
-  String? _currentFilePath; // NEW: Track file path
+  String? _currentFilePath;
   int _receivedBytes = 0;
+  int _expectedBytes = 0;  // ✅ FIX #1: Track expected size
   
   FileTransferHandler({
     required this.onProgress,
@@ -56,7 +53,9 @@ class FileTransferHandler {
       final metadataFrame = '${jsonEncode(metadata)}\n';
       socket.add(utf8.encode(metadataFrame));
       await socket.flush();
-      await Future.delayed(const Duration(milliseconds: 100));
+      
+      // ✅ FIX #2: Longer delay to ensure metadata is processed
+      await Future.delayed(const Duration(milliseconds: 200));
       
       // 2. Stream file chunks (raw binary)
       final stream = file.openRead();
@@ -66,28 +65,31 @@ class FileTransferHandler {
         socket.add(chunk);
         bytesSent += chunk.length;
         onProgress(bytesSent / fileSize);
+        
+        // ✅ FIX #3: Small delay between chunks to prevent buffer overflow
+        if (bytesSent % (BufferSize * 10) == 0) {
+          await Future.delayed(const Duration(milliseconds: 10));
+        }
       }
       
       await socket.flush();
       
-      // 3. Send end frame (JSON)
-      final endFrame = '${jsonEncode({
-        'type': 'file_transfer_end',
-        'file_id': fileId,
-        'status': 'success'
-      })}\n';
+      // ✅ FIX #4: Longer delay before end frame
+      await Future.delayed(const Duration(milliseconds: 200));
       
-      socket.add(utf8.encode(endFrame));
-      await socket.flush();
+      // 3. Send end frame (JSON) - REMOVED, server handles this now
+      // The fixed server sends the end frame automatically
       
       print('[FILE_SEND] ✓ Completed: $fileName ($bytesSent bytes)');
       onComplete(fileName, ''); // Empty path for sender
       
     } catch (e) {
       print('[FILE_SEND] ✗ Error: $e');
-      onError(e.toString());
+      onError('Failed to send file: $e');
     }
   }
+  
+  static const int BufferSize = 4096;
   
   // ============================================================================
   // RECEIVER: Handle incoming transfer start
@@ -107,18 +109,28 @@ class FileTransferHandler {
       final filePath = '${directory.path}/${timestamp}_$safeName';
       final file = File(filePath);
       
+      // ✅ FIX #5: Check if we can write to this location
+      try {
+        await file.create(recursive: true);
+      } catch (e) {
+        print('[FILE_RECV] ✗ Cannot create file: $e');
+        onError('Cannot save file: No permission');
+        return;
+      }
+      
       _isReceivingFile = true;
       _currentTransferMetadata = metadata;
-      _currentFilePath = filePath; // NEW: Store file path
+      _currentFilePath = filePath;
       _fileSink = file.openWrite();
       _receivedBytes = 0;
+      _expectedBytes = fileSize;  // ✅ FIX #6: Store expected size
       
       print('[FILE_RECV] Saving to: $filePath');
       onProgress(0.0);
       
     } catch (e) {
       print('[FILE_RECV] ✗ Setup error: $e');
-      onError(e.toString());
+      onError('Failed to prepare file: $e');
       _resetReceiveState();
     }
   }
@@ -127,63 +139,117 @@ class FileTransferHandler {
   // RECEIVER: Handle incoming chunk
   // ============================================================================
   void handleIncomingChunk(List<int> chunk) {
-    if (!_isReceivingFile || _fileSink == null) return;
-    
-    // Check if this is the end frame (JSON)
-    try {
-      final decoded = utf8.decode(chunk);
-      if (decoded.contains('file_transfer_end')) {
-        final jsonData = jsonDecode(decoded.trim());
-        handleTransferEnd(jsonData);
-        return;
-      }
-    } catch (_) {
-      // Not JSON, it's binary - continue
+    if (!_isReceivingFile || _fileSink == null) {
+      print('[FILE_RECV] ⚠️ Received chunk but not in receive mode');
+      return;
     }
     
-    // Write chunk to file
-    _fileSink!.add(chunk);
-    _receivedBytes += chunk.length;
+    // ✅ FIX #7: Don't try to detect end frame in chunks
+    // The server sends it separately after all file bytes
+    // We rely on byte counting instead
     
-    // Update progress
-    final fileSize = _currentTransferMetadata?['file_size'] ?? 1;
-    onProgress(_receivedBytes / fileSize);
-    
-    // Check completion
-    if (_receivedBytes >= fileSize) {
-      _finalizeTransfer();
+    try {
+      // Calculate how much we still need
+      final remaining = _expectedBytes - _receivedBytes;
+      
+      if (remaining <= 0) {
+        // We already got all the bytes, this must be the end frame
+        print('[FILE_RECV] Received end frame');
+        return;
+      }
+      
+      // Determine how much of this chunk is file data
+      final bytesToWrite = chunk.length <= remaining ? chunk.length : remaining;
+      
+      // Write only the file portion
+      if (bytesToWrite > 0) {
+        _fileSink!.add(chunk.sublist(0, bytesToWrite));
+        _receivedBytes += bytesToWrite;
+        
+        // Update progress
+        onProgress(_receivedBytes / _expectedBytes);
+        
+        // Log progress
+        if (_receivedBytes % (BufferSize * 25) == 0 || _receivedBytes >= _expectedBytes) {
+          final pct = ((_receivedBytes / _expectedBytes) * 100).toInt();
+          print('[FILE_RECV] Progress: $_receivedBytes/$_expectedBytes bytes ($pct%)');
+        }
+      }
+      
+      // ✅ FIX #8: Check completion by byte count, not end frame detection
+      if (_receivedBytes >= _expectedBytes) {
+        print('[FILE_RECV] All bytes received, finalizing...');
+        _finalizeTransfer();
+      }
+      
+    } catch (e) {
+      print('[FILE_RECV] ✗ Error writing chunk: $e');
+      onError('Failed to write file: $e');
+      _resetReceiveState();
     }
   }
   
   // ============================================================================
-  // RECEIVER: Handle transfer end
+  // RECEIVER: Handle transfer end (called by server's end frame)
   // ============================================================================
   void handleTransferEnd(Map<String, dynamic> data) {
-    _finalizeTransfer();
+    final status = data['status'];
+    print('[FILE_RECV] Received end frame: status=$status');
+    
+    if (status == 'success') {
+      // Only finalize if we haven't already
+      if (_isReceivingFile) {
+        _finalizeTransfer();
+      }
+    } else {
+      onError('Transfer failed on server');
+      _resetReceiveState();
+    }
   }
   
   Future<void> _finalizeTransfer() async {
     if (!_isReceivingFile) return;
     
-    await _fileSink?.flush();
-    await _fileSink?.close();
-    
-    final fileName = _currentTransferMetadata?['file_name'] ?? 'unknown';
-    final filePath = _currentFilePath ?? '';
-    
-    print('[FILE_RECV] ✓ Completed: $fileName ($_receivedBytes bytes)');
-    print('[FILE_RECV] Saved to: $filePath');
-    
-    onComplete(fileName, filePath); // CHANGED: Pass both fileName and filePath
-    _resetReceiveState();
+    try {
+      await _fileSink?.flush();
+      await _fileSink?.close();
+      
+      final fileName = _currentTransferMetadata?['file_name'] ?? 'unknown';
+      final filePath = _currentFilePath ?? '';
+      
+      // ✅ FIX #9: Verify file was saved correctly
+      final file = File(filePath);
+      final actualSize = await file.length();
+      
+      if (actualSize != _expectedBytes) {
+        print('[FILE_RECV] ⚠️ Size mismatch: expected $_expectedBytes, got $actualSize');
+        onError('File incomplete: expected $_expectedBytes bytes, got $actualSize');
+        await file.delete();
+        _resetReceiveState();
+        return;
+      }
+      
+      print('[FILE_RECV] ✓ Completed: $fileName ($_receivedBytes bytes)');
+      print('[FILE_RECV] Saved to: $filePath');
+      print('[FILE_RECV] Verified: $actualSize bytes on disk');
+      
+      onComplete(fileName, filePath);
+      _resetReceiveState();
+      
+    } catch (e) {
+      print('[FILE_RECV] ✗ Finalization error: $e');
+      onError('Failed to save file: $e');
+      _resetReceiveState();
+    }
   }
   
   void _resetReceiveState() {
     _isReceivingFile = false;
     _currentTransferMetadata = null;
-    _currentFilePath = null; // NEW: Clear path
+    _currentFilePath = null;
     _fileSink = null;
     _receivedBytes = 0;
+    _expectedBytes = 0;
   }
   
   void dispose() {

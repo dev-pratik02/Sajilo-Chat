@@ -44,6 +44,10 @@ except OSError as e:
 clients = {}
 clients_lock = threading.Lock()
 
+# ✅ FIX #1: Add transfer locking to prevent message interference
+active_transfers = {}  # {sender_username: receiver_username}
+transfers_lock = threading.Lock()
+
 
 def broadcast(message_data, exclude_user=None):
     """Send message to all connected clients except exclude_user"""
@@ -92,6 +96,7 @@ def handle(client, username):
     file_metadata = None
     receiver_socket = None
     bytes_relayed = 0
+    expected_bytes = 0  # ✅ FIX #2: Track expected bytes precisely
     
     while True:
         try:
@@ -100,16 +105,39 @@ def handle(client, username):
                 print(f"[INFO] {username} connection closed")
                 break
             
-            # Binary relay mode for file transfers
+            # ✅ FIX #3: Binary relay mode with precise byte counting
             if in_file_transfer:
                 try:
-                    receiver_socket.send(chunk)
-                    bytes_relayed += len(chunk)
+                    # Calculate how many bytes we still need
+                    remaining = expected_bytes - bytes_relayed
                     
-                    if bytes_relayed >= file_metadata['file_size']:
+                    if len(chunk) <= remaining:
+                        # Entire chunk is file data
+                        receiver_socket.send(chunk)
+                        bytes_relayed += len(chunk)
+                        
+                        # Log progress every ~25%
+                        progress_pct = int((bytes_relayed / expected_bytes) * 100)
+                        print(f"[FILE_RELAY] Progress: {bytes_relayed}/{expected_bytes} bytes ({progress_pct}%)")
+                        
+                    else:
+                        # Chunk contains file data + end frame
+                        # Only send the file portion
+                        file_portion = chunk[:remaining]
+                        receiver_socket.send(file_portion)
+                        bytes_relayed += len(file_portion)
+                        
+                        print(f"[FILE_RELAY] Final chunk: {len(file_portion)} bytes")
+                        
+                        # Put the rest (end frame) back into buffer for processing
+                        buffer = chunk[remaining:].decode('utf-8')
+                    
+                    # Check if transfer is complete
+                    if bytes_relayed >= expected_bytes:
                         print(f"[FILE] ✓ Relayed {file_metadata['file_name']} "
                               f"({bytes_relayed} bytes) from {username} to {file_metadata['receiver']}")
                         
+                        # Send end frame to receiver
                         end_frame = json.dumps({
                             'type': 'file_transfer_end',
                             'file_id': file_metadata['file_id'],
@@ -117,19 +145,38 @@ def handle(client, username):
                         }) + '\n'
                         receiver_socket.send(end_frame.encode('utf-8'))
                         
+                        # ✅ FIX #4: Clear transfer lock
+                        with transfers_lock:
+                            if username in active_transfers:
+                                del active_transfers[username]
+                            recipient = file_metadata['receiver']
+                            if recipient in active_transfers:
+                                del active_transfers[recipient]
+                        
+                        # Reset state
                         in_file_transfer = False
                         file_metadata = None
                         receiver_socket = None
                         bytes_relayed = 0
+                        expected_bytes = 0
                     
                     continue
                     
                 except Exception as e:
                     print(f"[ERROR] File relay failed: {e}")
+                    
+                    # ✅ Clear transfer lock on error
+                    with transfers_lock:
+                        if username in active_transfers:
+                            del active_transfers[username]
+                        if file_metadata and file_metadata.get('receiver') in active_transfers:
+                            del active_transfers[file_metadata['receiver']]
+                    
                     in_file_transfer = False
                     file_metadata = None
                     receiver_socket = None
                     bytes_relayed = 0
+                    expected_bytes = 0
                     
                     error_data = {
                         'type': 'error',
@@ -154,7 +201,7 @@ def handle(client, username):
                     message_data = json.loads(line)
                     message_type = message_data.get('type')
                     
-                    # Handle file transfer initiation
+                    # ✅ FIX #5: Handle file transfer initiation with locking
                     if message_type == 'file_transfer_start':
                         recipient = message_data.get('receiver')
                         file_name = message_data.get('file_name')
@@ -162,6 +209,28 @@ def handle(client, username):
                         file_id = message_data.get('file_id')
                         
                         print(f"[FILE] {username} wants to send '{file_name}' ({file_size} bytes) to {recipient}")
+                        
+                        # ✅ Check if either user is already in a transfer
+                        with transfers_lock:
+                            if username in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': 'You are already sending a file. Please wait.'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                print(f"[ERROR] {username} already in active transfer")
+                                continue
+                            
+                            if recipient in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': f'{recipient} is already in a file transfer.'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                print(f"[ERROR] {recipient} already in active transfer")
+                                continue
                         
                         with clients_lock:
                             if recipient not in clients:
@@ -188,13 +257,32 @@ def handle(client, username):
                             client.send(json_msg.encode('utf-8'))
                             continue
                         
+                        # ✅ Enter relay mode and lock both users
                         in_file_transfer = True
                         file_metadata = message_data
                         bytes_relayed = 0
+                        expected_bytes = file_size
                         
-                        print(f"[FILE] Entering relay mode: {file_name} → {recipient}")
+                        with transfers_lock:
+                            active_transfers[username] = recipient
+                            active_transfers[recipient] = username
+                        
+                        print(f"[FILE] Entering relay mode: {file_name} ({file_size} bytes) → {recipient}")
+                        print(f"[FILE] Transfer locked: {username} ↔ {recipient}")
                     
+                    # ✅ FIX #6: Block group messages during transfer
                     elif message_type == 'group':
+                        # Check if user is in active transfer
+                        with transfers_lock:
+                            if username in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': 'Cannot send messages during file transfer'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                continue
+                        
                         msg_text = message_data.get('message')
                         
                         # Save to database using ChatHistoryManager
@@ -207,10 +295,31 @@ def handle(client, username):
                         }
                         broadcast(broadcast_data)
                         print(f"[GROUP] {username}: {msg_text}")
-                        
+                    
+                    # ✅ FIX #7: Block DMs during transfer
                     elif message_type == 'dm':
                         recipient = message_data.get('to')
                         msg_text = message_data.get('message')
+                        
+                        # Check if either user is in active transfer
+                        with transfers_lock:
+                            if username in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': 'Cannot send messages during file transfer'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                continue
+                            
+                            if recipient in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': f'{recipient} is in a file transfer. Message not sent.'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                continue
                         
                         # Save to database using ChatHistoryManager
                         chat_history.save_message(username, recipient, msg_text, 'dm')
@@ -271,6 +380,11 @@ def handle(client, username):
         except Exception as e:
             print(f"[ERROR] Error handling {username}: {e}")
             break
+    
+    # ✅ FIX #8: Cleanup - clear any active transfers
+    with transfers_lock:
+        if username in active_transfers:
+            del active_transfers[username]
     
     # Cleanup
     with clients_lock:
