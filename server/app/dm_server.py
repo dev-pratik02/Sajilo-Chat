@@ -44,6 +44,10 @@ except OSError as e:
 clients = {}
 clients_lock = threading.Lock()
 
+# NEW: Track active file transfers to prevent message interference
+active_transfers = {}  # {sender_username: receiver_username}
+transfers_lock = threading.Lock()
+
 
 def broadcast(message_data, exclude_user=None):
     """Send message to all connected clients except exclude_user"""
@@ -92,6 +96,7 @@ def handle(client, username):
     file_metadata = None
     receiver_socket = None
     bytes_relayed = 0
+    expected_bytes = 0  # NEW: Track expected file size
     
     while True:
         try:
@@ -100,16 +105,37 @@ def handle(client, username):
                 print(f"[INFO] {username} connection closed")
                 break
             
-            # Binary relay mode for file transfers
+            # CRITICAL: Binary relay mode for file transfers
             if in_file_transfer:
                 try:
-                    receiver_socket.send(chunk)
-                    bytes_relayed += len(chunk)
+                    # Calculate remaining bytes
+                    remaining = expected_bytes - bytes_relayed
                     
-                    if bytes_relayed >= file_metadata['file_size']:
+                    # Only take what we need for the file
+                    if len(chunk) <= remaining:
+                        # Entire chunk is file data
+                        receiver_socket.send(chunk)
+                        bytes_relayed += len(chunk)
+                        
+                        print(f"[FILE_RELAY] Progress: {bytes_relayed}/{expected_bytes} bytes "
+                              f"({int(bytes_relayed/expected_bytes*100)}%)")
+                    else:
+                        # Chunk contains file data + possibly end frame
+                        file_portion = chunk[:remaining]
+                        receiver_socket.send(file_portion)
+                        bytes_relayed += len(file_portion)
+                        
+                        # Put the rest back in buffer for JSON parsing
+                        buffer = chunk[remaining:].decode('utf-8')
+                        
+                        print(f"[FILE_RELAY] Final chunk: {len(file_portion)} bytes")
+                    
+                    # Check if transfer complete
+                    if bytes_relayed >= expected_bytes:
                         print(f"[FILE] ✓ Relayed {file_metadata['file_name']} "
                               f"({bytes_relayed} bytes) from {username} to {file_metadata['receiver']}")
                         
+                        # Send end frame to receiver
                         end_frame = json.dumps({
                             'type': 'file_transfer_end',
                             'file_id': file_metadata['file_id'],
@@ -117,20 +143,46 @@ def handle(client, username):
                         }) + '\n'
                         receiver_socket.send(end_frame.encode('utf-8'))
                         
+                        # Clear transfer lock
+                        with transfers_lock:
+                            if username in active_transfers:
+                                del active_transfers[username]
+                            receiver_name = file_metadata['receiver']
+                            if receiver_name in active_transfers:
+                                del active_transfers[receiver_name]
+                        
+                        # Reset state - back to JSON mode
                         in_file_transfer = False
                         file_metadata = None
                         receiver_socket = None
                         bytes_relayed = 0
-                    
-                    continue
+                        expected_bytes = 0
+                        
+                        # Process any buffered data
+                        continue
+                    else:
+                        continue  # Still receiving file chunks
                     
                 except Exception as e:
                     print(f"[ERROR] File relay failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    
+                    # Clear transfer lock
+                    with transfers_lock:
+                        if username in active_transfers:
+                            del active_transfers[username]
+                        if file_metadata and file_metadata['receiver'] in active_transfers:
+                            del active_transfers[file_metadata['receiver']]
+                    
+                    # Reset state on error
                     in_file_transfer = False
                     file_metadata = None
                     receiver_socket = None
                     bytes_relayed = 0
+                    expected_bytes = 0
                     
+                    # Notify sender of failure
                     error_data = {
                         'type': 'error',
                         'message': 'File transfer failed'
@@ -163,6 +215,28 @@ def handle(client, username):
                         
                         print(f"[FILE] {username} wants to send '{file_name}' ({file_size} bytes) to {recipient}")
                         
+                        # NEW: Check if either user is already in a transfer
+                        with transfers_lock:
+                            if username in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': 'You are already sending a file. Please wait.'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                print(f"[ERROR] {username} already in active transfer")
+                                continue
+                            
+                            if recipient in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': f'{recipient} is receiving another file. Try again later.'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                print(f"[ERROR] {recipient} already in active transfer")
+                                continue
+                        
                         with clients_lock:
                             if recipient not in clients:
                                 error = {
@@ -188,13 +262,31 @@ def handle(client, username):
                             client.send(json_msg.encode('utf-8'))
                             continue
                         
+                        # NEW: Lock both users into transfer
+                        with transfers_lock:
+                            active_transfers[username] = recipient
+                            active_transfers[recipient] = username
+                        
                         in_file_transfer = True
                         file_metadata = message_data
                         bytes_relayed = 0
+                        expected_bytes = file_size  # NEW: Store expected size
                         
-                        print(f"[FILE] Entering relay mode: {file_name} → {recipient}")
+                        print(f"[FILE] Entering relay mode: {file_name} ({file_size} bytes) → {recipient}")
+                        print(f"[FILE] Transfer locked: {username} ↔ {recipient}")
                     
                     elif message_type == 'group':
+                        # NEW: Check if user is in active transfer
+                        with transfers_lock:
+                            if username in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': 'Cannot send messages during file transfer'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                continue
+                        
                         msg_text = message_data.get('message')
                         
                         # Save to database using ChatHistoryManager
@@ -211,6 +303,26 @@ def handle(client, username):
                     elif message_type == 'dm':
                         recipient = message_data.get('to')
                         msg_text = message_data.get('message')
+                        
+                        # NEW: Check if either user is in active transfer
+                        with transfers_lock:
+                            if username in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': 'Cannot send messages during file transfer'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                continue
+                            
+                            if recipient in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': f'{recipient} is in a file transfer. Message not sent.'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                continue
                         
                         # Save to database using ChatHistoryManager
                         chat_history.save_message(username, recipient, msg_text, 'dm')
@@ -270,6 +382,8 @@ def handle(client, username):
                     
         except Exception as e:
             print(f"[ERROR] Error handling {username}: {e}")
+            import traceback
+            traceback.print_exc()
             break
     
     # Cleanup
@@ -277,6 +391,11 @@ def handle(client, username):
         if username in clients:
             del clients[username]
             print(f"[DISCONNECT] {username} disconnected")
+    
+    # NEW: Clear any active transfers
+    with transfers_lock:
+        if username in active_transfers:
+            del active_transfers[username]
     
     disconnect_data = {
         'type': 'system',
@@ -387,6 +506,8 @@ def receive():
                 
             except Exception as e:
                 print(f"[ERROR] Handshake error: {e}")
+                import traceback
+                traceback.print_exc()
                 client.close()
                 
         except KeyboardInterrupt:
@@ -394,6 +515,8 @@ def receive():
             break
         except Exception as e:
             print(f"[ERROR] Accept error: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
