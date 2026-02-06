@@ -335,14 +335,14 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware, TickerPr
 
   Color _getAvatarColor(int index) {
     final colors = [
-      Color(0xFF6C63FF), // Purple
-      Color(0xFF4ECDC4), // Teal
-      Color(0xFFFF6B6B), // Red
-      Color(0xFFFFA502), // Orange
-      Color(0xFF26DE81), // Green
-      Color(0xFFFC5C65), // Pink
-      Color(0xFF45AAF2), // Blue
-      Color(0xFFA55EEA), // Violet
+      Color(0xFF6C63FF), 
+      Color(0xFF4ECDC4), 
+      Color(0xFFFF6B6B),
+      Color(0xFFFFA502), 
+      Color(0xFF26DE81), 
+      Color(0xFFFC5C65), 
+      Color(0xFF45AAF2), 
+      Color(0xFFA55EEA), 
     ];
     return colors[index % colors.length];
   }

@@ -219,7 +219,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     return Scaffold(
       body: Stack(
         children: [
-          // ✨ Gradient background
+          //    Gradient background
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -234,7 +234,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
             ),
           ),
           
-          // ✨ Decorative circles
+          //    Decorative circles
           Positioned(
             top: -100,
             right: -100,
@@ -269,7 +269,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // ✨ Animated logo
+                      //    Animated logo
                       ScaleTransition(
                         scale: _logoAnimation,
                         child: Container(
@@ -395,44 +395,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                           ),
                         ),
                       ),
-                      
-                      // if (!_isRegisterMode) ...[
-                      //   const SizedBox(height: 30),
-                      //   Container(
-                      //     padding: const EdgeInsets.all(16),
-                      //     decoration: BoxDecoration(
-                      //       color: Colors.white.withOpacity(0.15),
-                      //       borderRadius: BorderRadius.circular(16),
-                      //       border: Border.all(
-                      //         color: Colors.white.withOpacity(0.3),
-                      //         width: 1,
-                      //       ),
-                      //     ),
-                      //     child: Column(
-                      //       children: [
-                      //         Row(
-                      //           mainAxisSize: MainAxisSize.min,
-                      //           children: [
-                      //             Icon(Icons.lightbulb_rounded, color: Colors.white, size: 20),
-                      //             SizedBox(width: 8),
-                      //             Text(
-                      //               'Quick Start Guide',
-                      //               style: GoogleFonts.poppins(
-                      //                 color: Colors.white,
-                      //                 fontWeight: FontWeight.w600,
-                      //                 fontSize: 14,
-                      //               ),
-                      //             ),
-                      //           ],
-                      //         ),
-                      //         SizedBox(height: 12),
-                      //         _buildQuickStartItem('1', 'Start Flask: python run.py (port 5001)'),
-                      //         _buildQuickStartItem('2', 'Start Chat: python dm_server.py (port 5050)'),
-                      //         _buildQuickStartItem('3', 'Use "localhost" for same PC'),
-                      //       ],
-                      //     ),
-                      //   ),
-                      // ],
                     ],
                   ),
                 ),
