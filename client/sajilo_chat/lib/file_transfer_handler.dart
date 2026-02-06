@@ -14,7 +14,7 @@ class FileTransferHandler {
   IOSink? _fileSink;
   String? _currentFilePath;
   int _receivedBytes = 0;
-  int _expectedBytes = 0;  //   FIX #1: Track expected size
+  int _expectedBytes = 0; 
   
   FileTransferHandler({
     required this.onProgress,
@@ -24,9 +24,8 @@ class FileTransferHandler {
   
   bool get isReceivingFile => _isReceivingFile;
   
-  // ============================================================================
-  // SENDER: Stream file to recipient
-  // ============================================================================
+  //stream file to the receiver
+  
   Future<void> sendFile({
     required File file,
     required Socket socket,
@@ -40,7 +39,7 @@ class FileTransferHandler {
       
       print('[FILE_SEND] Starting transfer: $fileName ($fileSize bytes)');
       
-      // 1. Send metadata frame (JSON)
+      //Sends only the metadata first
       final metadata = {
         'type': 'file_transfer_start',
         'file_id': fileId,
@@ -54,10 +53,10 @@ class FileTransferHandler {
       socket.add(utf8.encode(metadataFrame));
       await socket.flush();
       
-      //   FIX #2: Longer delay to ensure metadata is processed
+      //  Longer delay to ensure metadata is processed
       await Future.delayed(const Duration(milliseconds: 200));
       
-      // 2. Stream file chunks (raw binary)
+      // Stream file chunks (raw binary)
       final stream = file.openRead();
       int bytesSent = 0;
       
@@ -66,7 +65,7 @@ class FileTransferHandler {
         bytesSent += chunk.length;
         onProgress(bytesSent / fileSize);
         
-        //   FIX #3: Small delay between chunks to prevent buffer overflow
+        //  Small delay between chunks to prevent buffer overflow
         if (bytesSent % (BufferSize * 10) == 0) {
           await Future.delayed(const Duration(milliseconds: 10));
         }
@@ -74,11 +73,10 @@ class FileTransferHandler {
       
       await socket.flush();
       
-      //   FIX #4: Longer delay before end frame
+      // Longer delay before end frame
       await Future.delayed(const Duration(milliseconds: 200));
       
-      // 3. Send end frame (JSON) - REMOVED, server handles this now
-      // The fixed server sends the end frame automatically
+      
       
       print('[FILE_SEND] ✓ Completed: $fileName ($bytesSent bytes)');
       onComplete(fileName, ''); // Empty path for sender
@@ -91,9 +89,8 @@ class FileTransferHandler {
   
   static const int BufferSize = 4096;
   
-  // ============================================================================
-  // RECEIVER: Handle incoming transfer start
-  // ============================================================================
+  //FOR THE RECEIVING ENDDD
+
   Future<void> handleTransferStart(Map<String, dynamic> metadata) async {
     try {
       final fileName = metadata['file_name'];
@@ -135,25 +132,22 @@ class FileTransferHandler {
     }
   }
   
-  // ============================================================================
-  // RECEIVER: Handle incoming chunk
-  // ============================================================================
+  //INCOMING CHUNK HANDLER
+
   void handleIncomingChunk(List<int> chunk) {
     if (!_isReceivingFile || _fileSink == null) {
       print('[FILE_RECV] ⚠️ Received chunk but not in receive mode');
       return;
     }
     
-    //   FIX #7: Don't try to detect end frame in chunks
-    // The server sends it separately after all file bytes
-    // We rely on byte counting instead
+ 
     
     try {
-      // Calculate how much we still need
+      // Calculate how much bytes still needed as compared to expected size
       final remaining = _expectedBytes - _receivedBytes;
       
       if (remaining <= 0) {
-        // We already got all the bytes, this must be the end frame
+        // After getting all the bytes, this must be the end frame
         print('[FILE_RECV] Received end frame');
         return;
       }
@@ -176,7 +170,7 @@ class FileTransferHandler {
         }
       }
       
-      //   FIX #8: Check completion by byte count, not end frame detection
+      //   Checking completion by byte count, not end frame detection
       if (_receivedBytes >= _expectedBytes) {
         print('[FILE_RECV] All bytes received, finalizing...');
         _finalizeTransfer();
@@ -189,9 +183,8 @@ class FileTransferHandler {
     }
   }
   
-  // ============================================================================
-  // RECEIVER: Handle transfer end (called by server's end frame)
-  // ============================================================================
+ //FOR THE END OF TRANSFER
+
   void handleTransferEnd(Map<String, dynamic> data) {
     final status = data['status'];
     print('[FILE_RECV] Received end frame: status=$status');
@@ -217,7 +210,7 @@ class FileTransferHandler {
       final fileName = _currentTransferMetadata?['file_name'] ?? 'unknown';
       final filePath = _currentFilePath ?? '';
       
-      //   FIX #9: Verify file was saved correctly
+      //  Verify file was saved correctly
       final file = File(filePath);
       final actualSize = await file.length();
       

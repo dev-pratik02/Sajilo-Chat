@@ -16,9 +16,6 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
-# ============================================================================
-# DATABASE MODELS
-# ============================================================================
 
 # User model (for authentication)
 class User(db.Model):
@@ -68,9 +65,7 @@ class ChatList(db.Model):
             'last_updated': self.last_updated.isoformat()
         }
 
-# ============================================================================
-# AUTHENTICATION ROUTES
-# ============================================================================
+        '''Route for authentication'''
 
 @app.route('/auth/register', methods=['POST'])
 def register():
@@ -127,9 +122,7 @@ def login():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ============================================================================
-# CHAT HISTORY API ROUTES
-# ============================================================================
+#Chat history routes through api
 
 @app.route('/api/messages/save', methods=['POST'])
 def save_message():
@@ -240,17 +233,13 @@ def delete_messages():
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
-# ============================================================================
-# HEALTH CHECK
-# ============================================================================
+#Check if it running well
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'service': 'Sajilo Chat Unified Server'}), 200
 
-# ============================================================================
-# INITIALIZATION
-# ============================================================================
+#Initialize database and run server
 
 with app.app_context():
     db.create_all()

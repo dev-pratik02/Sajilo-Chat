@@ -34,7 +34,7 @@ class ChatHistoryHandler {
     socket.write(utf8.encode(request));
   }
   
-  /// Process incoming history data
+  /// to process incoming history data
   List<Map<String, dynamic>> processHistoryData(Map<String, dynamic> data) {
     final chatWith = data['chat_with'] as String;
     final messages = data['messages'] as List;

@@ -10,9 +10,8 @@ class MessageBubble extends StatelessWidget {
   final String? fileName;
   final String? filePath;
   final VoidCallback? onFileTap;
-  final bool isGroupChat; // ✨ NEW: Distinguish group vs DM
-  final Color bubbleColor; // ✨ NEW: Custom bubble color
-
+  final bool isGroupChat; // to later distinguish GC and DM
+  final Color bubbleColor; 
   const MessageBubble({
     super.key, 
     required this.message,
@@ -23,16 +22,16 @@ class MessageBubble extends StatelessWidget {
     this.fileName,
     this.filePath,
     this.onFileTap,
-    this.isGroupChat = false, // ✨ NEW
-    this.bubbleColor = const Color(0xFF6C63FF), // ✨ NEW
+    this.isGroupChat = false,
+    this.bubbleColor = const Color(0xFF6C63FF), 
   });
 
   @override
   Widget build(BuildContext context) {
-    // ✨ Distinct colors for group chat vs DM
+    //    Distinct colors for group chat vs DM
     final Color myBubbleColor = isGroupChat 
         ? Color(0xFFE3E0FF)  // Light purple for my group messages
-        : Color(0xFFD5D0FF);  // Slightly different purple for my DMs
+        : Color(0xFFD5D0FF);  // Slightly different purple for DMs
     
     final Color otherBubbleColor = Colors.white;
     
@@ -46,7 +45,7 @@ class MessageBubble extends StatelessWidget {
         child: Column(
           crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
-            // Sender name (for group chats when showing other users)
+            // Sender name for group chats
             if (showSender)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4, left: 12, right: 12),
@@ -80,7 +79,7 @@ class MessageBubble extends StatelessWidget {
                     offset: Offset(0, 2),
                   ),
                 ],
-                // ✨ Subtle gradient for my messages
+                //    Subtle gradient for my messages
                 gradient: isMe ? LinearGradient(
                   colors: [
                     myBubbleColor,

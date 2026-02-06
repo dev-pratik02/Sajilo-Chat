@@ -44,7 +44,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   // History loading state
   bool _historyLoaded = false;
   
-  // ✨ NEW: Typing indicator state
+  //    NEW: Typing indicator state
   bool _otherUserTyping = false;
   Timer? _typingTimer;
   Timer? _typingDebouncer;
@@ -143,7 +143,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             else if (type == 'file_transfer_end') {
               _fileHandler.handleTransferEnd(jsonData);
             }
-            // ✨ NEW: Typing indicator
+            //    Typing indicator
             else if (type == 'typing') {
               final from = jsonData['from'];
               if (from == widget.chatWith || (widget.chatWith == 'group' && from != widget.username)) {
@@ -202,7 +202,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ✨ NEW: Handle typing indicator
+  //    NEW: Handle typing indicator
   void _handleTypingIndicator() {
     setState(() => _otherUserTyping = true);
     _typingTimer?.cancel();
@@ -213,7 +213,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     });
   }
 
-  // ✨ NEW: Send typing indicator
+  //    NEW: Send typing indicator
   void _sendTypingIndicator() {
     _typingDebouncer?.cancel();
     _typingDebouncer = Timer(Duration(milliseconds: 500), () {
@@ -377,13 +377,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    // ✨ Distinct colors for Group vs DM
+    //    Distinct colors for Group vs DM
     final bool isGroup = widget.chatWith == 'group';
-    final Color primaryColor = isGroup ? Color(0xFF6C63FF) : Color(0xFF8B7FFF); // Purple for group, lighter for DM
+    final Color primaryColor = isGroup ? Color(0xFF6C63FF) : Color(0xFF8B7FFF);
     final Color accentColor = isGroup ? Color(0xFF5A52D5) : Color(0xFF9D8FFF);
     
     return Scaffold(
-      backgroundColor: Color(0xFFF5F5FA), // Light purple-gray background
+      backgroundColor: Color(0xFFF5F5FA),
       appBar: AppBar(
         backgroundColor: primaryColor,
         elevation: 0,
@@ -393,7 +393,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         ),
         title: Row(
           children: [
-            // ✨ Animated avatar
+            //    Animated avatar
             Hero(
               tag: 'avatar_${widget.chatWith}',
               child: CircleAvatar(
@@ -424,7 +424,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  // ✨ Typing indicator in appbar
+                  //    Typing indicator in appbar
                   if (_otherUserTyping)
                     Text(
                       'typing...',
@@ -576,13 +576,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
                     itemCount: _messages.length + (_otherUserTyping ? 1 : 0),
                     itemBuilder: (context, index) {
-                      // ✨ Show typing indicator at end
+                      //    Show typing indicator at end
                       if (_otherUserTyping && index == _messages.length) {
                         return _buildTypingIndicator(primaryColor);
                       }
                       
                       final msg = _messages[index];
-                      // ✨ Fade-in animation
+                      //    Fade-in animation
                       return TweenAnimationBuilder<double>(
                         duration: Duration(milliseconds: 300),
                         tween: Tween(begin: 0.0, end: 1.0),
@@ -697,7 +697,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  // ✨ Typing indicator widget
+  //    Typing indicator widget
   Widget _buildTypingIndicator(Color color) {
     return Padding(
       padding: const EdgeInsets.only(left: 16, bottom: 8, top: 4),
