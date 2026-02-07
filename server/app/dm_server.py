@@ -37,7 +37,7 @@ try:
     print("=" * 60)
     print(f"Server is listening on {IP_address}:{Port}")
     print(f"Database API: {chat_history.db_api_url}")
-    print("Features: End-to-End Encryption, File Transfer")
+    print("Features: End-to-End Encryption, File Transfer, Group Chat")
     print("Waiting for connections...")
     print("=" * 60)
 except OSError as e:
@@ -210,109 +210,117 @@ def handle(client, username):
                         
                         print(f"[FILE] {username} wants to send '{file_name}' ({file_size} bytes) to {recipient}")
                         
-                        # Check transfer lock
+                        # Check if either party is in a transfer
                         with transfers_lock:
-                            if username in active_transfers or recipient in active_transfers:
-                                print(f"[FILE] ✗ Transfer blocked - active transfer in progress")
-                                error_data = {
+                            if username in active_transfers:
+                                error = {
                                     'type': 'error',
-                                    'message': 'File transfer already in progress'
+                                    'message': 'You are already in a file transfer'
                                 }
-                                json_msg = json.dumps(error_data) + '\n'
+                                json_msg = json.dumps(error) + '\n'
                                 client.send(json_msg.encode('utf-8'))
                                 continue
                             
-                            active_transfers[username] = recipient
-                            active_transfers[recipient] = username
+                            if recipient in active_transfers:
+                                error = {
+                                    'type': 'error',
+                                    'message': f'{recipient} is already receiving a file'
+                                }
+                                json_msg = json.dumps(error) + '\n'
+                                client.send(json_msg.encode('utf-8'))
+                                continue
+                            
+                            # Lock both users
+                            active_transfers[username] = True
+                            active_transfers[recipient] = True
                         
-                        # Get receiver's socket
+                        # Forward metadata to recipient
                         with clients_lock:
-                            if recipient not in clients:
-                                with transfers_lock:
-                                    del active_transfers[username]
-                                    del active_transfers[recipient]
+                            if recipient in clients:
+                                receiver_socket = clients[recipient]
                                 
-                                error_data = {
-                                    'type': 'error',
-                                    'message': f'User {recipient} is offline'
+                                metadata = {
+                                    'type': 'file_transfer_start',
+                                    'file_id': file_id,
+                                    'file_name': file_name,
+                                    'file_size': file_size,
+                                    'sender': username,
+                                    'receiver': recipient
                                 }
-                                json_msg = json.dumps(error_data) + '\n'
+                                json_msg = json.dumps(metadata) + '\n'
+                                receiver_socket.send(json_msg.encode('utf-8'))
+                                
+                                # Enter binary relay mode
+                                in_file_transfer = True
+                                file_metadata = message_data
+                                bytes_relayed = 0
+                                expected_bytes = file_size
+                                
+                                print(f"[FILE] Entering relay mode: {file_name} ({file_size} bytes)")
+                            else:
+                                # Recipient not online
+                                with transfers_lock:
+                                    if username in active_transfers:
+                                        del active_transfers[username]
+                                    if recipient in active_transfers:
+                                        del active_transfers[recipient]
+                                
+                                error = {
+                                    'type': 'error',
+                                    'message': f'{recipient} is not online'
+                                }
+                                json_msg = json.dumps(error) + '\n'
                                 client.send(json_msg.encode('utf-8'))
-                                continue
-                            
-                            receiver_socket = clients[recipient]
-                        
-                        # Forward metadata to receiver
-                        try:
-                            metadata_json = json.dumps(message_data) + '\n'
-                            receiver_socket.send(metadata_json.encode('utf-8'))
-                            print(f"[FILE] Metadata forwarded to {recipient}")
-                        except Exception as e:
-                            print(f"[FILE] ✗ Failed to send metadata: {e}")
-                            
-                            with transfers_lock:
-                                del active_transfers[username]
-                                del active_transfers[recipient]
-                            
-                            error_data = {'type': 'error', 'message': 'Failed to initiate transfer'}
-                            json_msg = json.dumps(error_data) + '\n'
-                            client.send(json_msg.encode('utf-8'))
-                            continue
-                        
-                        # Enter file transfer mode
-                        in_file_transfer = True
-                        file_metadata = message_data
-                        expected_bytes = file_size
-                        bytes_relayed = 0
-                        print(f"[FILE] Entering relay mode for {file_name}")
                     
-                    # Handle encrypted group messages
+                    # ✅ FIXED: Handle group chat messages
                     elif message_type == 'group':
-                        msg_text = message_data.get('message')
-                        encrypted_data = message_data.get('encrypted_data')  # NEW: encrypted payload
+                        msg_text = message_data.get('message', '')
+                        timestamp = message_data.get('timestamp', '')
                         
-                        # Broadcast encrypted message to all except sender
-                        group_data = {
+                        print(f"[GROUP] {username}: {msg_text}")
+                        
+                        # Broadcast to all clients EXCEPT sender (sender shows it locally)
+                        group_msg = {
                             'type': 'group',
                             'from': username,
-                            'message': msg_text if msg_text else '[Encrypted Message]',
-                            'encrypted_data': encrypted_data,  # Forward encrypted data
-                            'timestamp': message_data.get('timestamp')
+                            'message': msg_text,
+                            'timestamp': timestamp
                         }
+                        broadcast(group_msg, exclude_user=username)
+                        print(f"[GROUP] Broadcasted to all except {username}")
                         
-                        broadcast(group_data, exclude_user=username)
-                        
-                        # Save encrypted message to database
-                        if encrypted_data:
-                            chat_history.save_encrypted_message(
-                                sender=username,
-                                recipient='group',
-                                encrypted_data=encrypted_data,
-                                msg_type='group'
-                            )
-                        
-                        print(f"[GROUP] {username}: [Encrypted]")
+                        # ✅ Save group message to database (as plaintext in 'message' field)
+                        # Group messages are stored with recipient='group' and type='group'
+                        # We store the plaintext in 'ciphertext' field since DB expects it
+                        saved = chat_history.save_encrypted_message(
+                            sender=username,
+                            recipient='group',
+                            encrypted_data={
+                                'ciphertext': msg_text,  # Store plaintext message
+                                'nonce': '',              # Not encrypted
+                                'mac': ''                 # Not encrypted
+                            },
+                            msg_type='group'
+                        )
+                        if saved:
+                            print(f"[GROUP] ✓ Message saved to database")
+                        else:
+                            print(f"[GROUP] ✗ Failed to save message to database")
                     
-                    # Handle encrypted DMs
+                    # Handle direct messages (encrypted)
                     elif message_type == 'dm':
                         recipient = message_data.get('to')
-                        msg_text = message_data.get('message')
-                        encrypted_data = message_data.get('encrypted_data')  # NEW: encrypted payload
+                        msg_text = message_data.get('message', '')
+                        encrypted_data = message_data.get('encrypted_data')
                         
-                        if not recipient:
-                            error_data = {'type': 'error', 'message': 'Recipient not specified'}
-                            json_msg = json.dumps(error_data) + '\n'
-                            client.send(json_msg.encode('utf-8'))
-                            continue
-                        
-                        # Forward encrypted message to recipient
+                        # Forward encrypted DM to recipient
                         dm_data = {
                             'type': 'dm',
                             'from': username,
                             'to': recipient,
                             'message': msg_text if msg_text else '[Encrypted Message]',
-                            'encrypted_data': encrypted_data,  # Forward encrypted data
-                            'timestamp': message_data.get('timestamp')
+                            'encrypted_data': encrypted_data,
+                            'timestamp': message_data.get('timestamp', '')
                         }
                         
                         if send_to_user(recipient, dm_data):
