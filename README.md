@@ -24,5 +24,5 @@ FOR CLIENT:
 Run main.dart on your emulator
 Connect to the IP of the server
 
-
+...
 
