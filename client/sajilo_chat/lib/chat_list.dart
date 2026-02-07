@@ -8,6 +8,7 @@ import 'package:sajilo_chat/utilities.dart';
 import 'package:sajilo_chat/chat_history_handler.dart';
 import 'chat_screen.dart';
 import 'package:sajilo_chat/crypto_manager.dart';
+import 'package:http/http.dart' as http;
 
 class ChatsListPage extends StatefulWidget {
   final SocketWrapper? socket;
@@ -198,21 +199,13 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware, TickerPr
               
             } else if (type == 'dm') {
               final from = jsonData['from'];
-              final msg = jsonData['message'];
-              
-              if (from != widget.username) {
-                if (!_isInChat || _currentChatWith != from) {
-                  if (!mounted) return;
-                  setState(() {
-                    _lastMessages[from] = msg;
-                    _unreadCounts[from] = (_unreadCounts[from] ?? 0) + 1;
-                  });
-                } else {
-                  if (!mounted) return;
-                  setState(() {
-                    _lastMessages[from] = msg;
-                  });
-                }
+              if (jsonData.containsKey('encrypted_data')) {
+                _handleEncryptedDMPreview(from, jsonData['encrypted_data']);        
+              } 
+              else {
+                  // Fallback for unencrypted messages
+                  final msg = jsonData['message'];
+                  _updateChatPreview(from, msg);
               }
             } else if (type == 'error') {
               final errorMsg = jsonData['message'] ?? 'Unknown error';
@@ -247,6 +240,86 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware, TickerPr
     );
   }
 
+   /// Decrypt and update chat preview for encrypted DM
+  Future<void> _handleEncryptedDMPreview(String from, Map<String, dynamic> encryptedData) async {
+    if (widget.cryptoManager == null) {
+      print('[ChatList] No crypto manager available');
+      _updateChatPreview(from, '[Encrypted message]');
+      return;
+    }
+    
+    try {
+      // Check if we have a session key for this user
+      if (!widget.cryptoManager!.hasSessionKey(from)) {
+        print('[ChatList] No session key for $from, establishing encryption...');
+        await _establishEncryption(from);
+      }
+      
+      // Decrypt the message
+      final decryptedText = await widget.cryptoManager!.decryptMessage(
+        from,
+        encryptedData,
+      );
+      
+      print('[ChatList] ✅ Decrypted preview from $from: ${decryptedText.substring(0, decryptedText.length > 20 ? 20 : decryptedText.length)}...');
+      
+      // Update preview with decrypted text
+      _updateChatPreview(from, decryptedText);
+      
+    } catch (e) {
+      print('[ChatList] Decryption failed for preview: $e');
+      // Show generic message on decryption failure
+      _updateChatPreview(from, '🔒 New encrypted message');
+    }
+  }
+
+  /// Update chat preview text and unread count
+  void _updateChatPreview(String from, String message) {
+    if (from == widget.username) return;  // Don't update for our own messages
+    
+    if (!_isInChat || _currentChatWith != from) {
+      // User is not viewing this chat, increment unread
+      if (!mounted) return;
+      setState(() {
+        _lastMessages[from] = message;
+        _unreadCounts[from] = (_unreadCounts[from] ?? 0) + 1;
+      });
+    } else {
+      // User is viewing this chat, just update preview (no unread increment)
+      if (!mounted) return;
+      setState(() {
+        _lastMessages[from] = message;
+      });
+    }
+  }
+
+  /// Establish encryption with a user (fetch public key and derive session)
+  Future<void> _establishEncryption(String username) async {
+    try {
+      print('[ChatList] Fetching public key for $username...');
+      
+      // Fetch public key from server
+      final response = await http.get(
+        Uri.parse('http://${widget.serverHost}:5001/api/keys/get/$username'),
+      ).timeout(Duration(seconds: 3));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final publicKey = data['public_key'];
+        
+        // Store public key and derive session key
+        widget.cryptoManager!.storePublicKey(username, publicKey);
+        await widget.cryptoManager!.deriveSessionKey(username);
+        
+        print('[ChatList] ✅ Encryption established with $username');
+      } else {
+        throw Exception('Failed to fetch public key: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('[ChatList] Failed to establish encryption: $e');
+      rethrow;
+    }
+  }
   void _showDisconnectDialog() {
     showDialog(
       context: context,
