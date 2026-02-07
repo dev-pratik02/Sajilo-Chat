@@ -305,9 +305,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       for (var msg in messages) {
         try {
           String displayMessage;
+          final msgType = msg['type'] ?? 'dm';
           
-          // Check if message has encrypted_data
-          if (msg.containsKey('ciphertext') && widget.chatWith != 'group' && _encryptionReady) {
+          // ✅ FIX: Handle group messages specially
+          if (msgType == 'group' || widget.chatWith == 'group') {
+            // For group messages, the plaintext is stored in 'ciphertext' field
+            // (because database schema uses that field)
+            displayMessage = msg['ciphertext'] ?? msg['message'] ?? '[No message]';
+            print('[ChatScreen] Group history message: $displayMessage');
+          }
+          // Check if message has encrypted_data (for DMs)
+          else if (msg.containsKey('ciphertext') && _encryptionReady) {
             // Decrypt the message
             final encryptedData = {
               'ciphertext': msg['ciphertext'],
@@ -320,8 +328,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               encryptedData,
             );
           } else {
-            // Fallback for unencrypted or group messages
-            displayMessage = msg['message'] ?? '[Unable to decrypt]';
+            // Fallback for unencrypted messages
+            displayMessage = msg['message'] ?? msg['ciphertext'] ?? '[Unable to decrypt]';
           }
           
           decryptedMessages.add({
@@ -329,7 +337,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             'message': displayMessage,
             'isMe': msg['from'] == widget.username,
             'timestamp': msg['timestamp'],
-            'type': msg['type'],
+            'type': msgType,
           });
         } catch (e) {
           print('[E2EE] Failed to decrypt history message: $e');
