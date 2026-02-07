@@ -2,9 +2,11 @@ import socket
 import threading
 import json
 import jwt
+import os
 from chat_history_manager import ChatHistoryManager
 
-JWT_SECRET = "jwt-secret-change-me"
+# Centralized JWT secret (shared with unified_server)
+JWT_SECRET = os.getenv("JWT_SECRET", "jwt-secret-change-me")
 JWT_ALGORITHM = "HS256"
 
 def get_lan_ip():
@@ -31,10 +33,11 @@ try:
     server_socket.bind(("0.0.0.0", Port))
     server_socket.listen()
     print("=" * 60)
-    print("         SAJILO CHAT SERVER (WITH HISTORY)")
+    print("      SAJILO CHAT SERVER (E2EE ENABLED)")
     print("=" * 60)
     print(f"Server is listening on {IP_address}:{Port}")
     print(f"Database API: {chat_history.db_api_url}")
+    print("Features: End-to-End Encryption, File Transfer")
     print("Waiting for connections...")
     print("=" * 60)
 except OSError as e:
@@ -44,8 +47,8 @@ except OSError as e:
 clients = {}
 clients_lock = threading.Lock()
 
-#   FIX #1: Add transfer locking to prevent message interference
-active_transfers = {}  # {sender_username: receiver_username}
+# Transfer locking to prevent message interference
+active_transfers = {}
 transfers_lock = threading.Lock()
 
 
@@ -96,7 +99,7 @@ def handle(client, username):
     file_metadata = None
     receiver_socket = None
     bytes_relayed = 0
-    expected_bytes = 0  #    Track expected bytes for progress and completion detection
+    expected_bytes = 0
     
     while True:
         try:
@@ -105,7 +108,7 @@ def handle(client, username):
                 print(f"[INFO] {username} connection closed")
                 break
             
-            #   Binary relay mode with byte counting
+            # Binary relay mode with byte counting
             if in_file_transfer:
                 try:
                     # Calculate how many bytes we still need
@@ -118,18 +121,16 @@ def handle(client, username):
                         
                         # Log progress every ~25%
                         progress_pct = int((bytes_relayed / expected_bytes) * 100)
-                        print(f"[FILE_RELAY] Progress: {bytes_relayed}/{expected_bytes} bytes ({progress_pct}%)")
+                        if progress_pct % 25 == 0:
+                            print(f"[FILE_RELAY] Progress: {bytes_relayed}/{expected_bytes} bytes ({progress_pct}%)")
                         
                     else:
                         # Chunk contains file data + end frame
-                        # Only send the file portion
                         file_portion = chunk[:remaining]
                         receiver_socket.send(file_portion)
                         bytes_relayed += len(file_portion)
                         
                         print(f"[FILE_RELAY] Final chunk: {len(file_portion)} bytes")
-                        
-                        # Put the rest (end frame) back into buffer for processing
                         buffer = chunk[remaining:].decode('utf-8')
                     
                     # Check if transfer is complete
@@ -145,7 +146,7 @@ def handle(client, username):
                         }) + '\n'
                         receiver_socket.send(end_frame.encode('utf-8'))
                         
-                        #   Clear transfer lock
+                        # Clear transfer lock
                         with transfers_lock:
                             if username in active_transfers:
                                 del active_transfers[username]
@@ -165,7 +166,6 @@ def handle(client, username):
                 except Exception as e:
                     print(f"[ERROR] File relay failed: {e}")
                     
-                    #   Clear transfer lock on error
                     with transfers_lock:
                         if username in active_transfers:
                             del active_transfers[username]
@@ -201,7 +201,7 @@ def handle(client, username):
                     message_data = json.loads(line)
                     message_type = message_data.get('type')
                     
-                    #    Handle file transfer initiation with locking
+                    # Handle file transfer initiation with locking
                     if message_type == 'file_transfer_start':
                         recipient = message_data.get('receiver')
                         file_name = message_data.get('file_name')
@@ -210,137 +210,134 @@ def handle(client, username):
                         
                         print(f"[FILE] {username} wants to send '{file_name}' ({file_size} bytes) to {recipient}")
                         
-                        #   Check if either user is already in a transfer
+                        # Check transfer lock
                         with transfers_lock:
-                            if username in active_transfers:
-                                error = {
+                            if username in active_transfers or recipient in active_transfers:
+                                print(f"[FILE] ✗ Transfer blocked - active transfer in progress")
+                                error_data = {
                                     'type': 'error',
-                                    'message': 'You are already sending a file. Please wait.'
+                                    'message': 'File transfer already in progress'
                                 }
-                                json_msg = json.dumps(error) + '\n'
+                                json_msg = json.dumps(error_data) + '\n'
                                 client.send(json_msg.encode('utf-8'))
-                                print(f"[ERROR] {username} already in active transfer")
                                 continue
                             
-                            if recipient in active_transfers:
-                                error = {
-                                    'type': 'error',
-                                    'message': f'{recipient} is already in a file transfer.'
-                                }
-                                json_msg = json.dumps(error) + '\n'
-                                client.send(json_msg.encode('utf-8'))
-                                print(f"[ERROR] {recipient} already in active transfer")
-                                continue
+                            active_transfers[username] = recipient
+                            active_transfers[recipient] = username
                         
+                        # Get receiver's socket
                         with clients_lock:
                             if recipient not in clients:
-                                error = {
+                                with transfers_lock:
+                                    del active_transfers[username]
+                                    del active_transfers[recipient]
+                                
+                                error_data = {
                                     'type': 'error',
-                                    'message': f'{recipient} is offline. Cannot send file.'
+                                    'message': f'User {recipient} is offline'
                                 }
-                                json_msg = json.dumps(error) + '\n'
+                                json_msg = json.dumps(error_data) + '\n'
                                 client.send(json_msg.encode('utf-8'))
-                                print(f"[ERROR] {recipient} offline, can't relay file")
                                 continue
                             
                             receiver_socket = clients[recipient]
                         
+                        # Forward metadata to receiver
                         try:
-                            receiver_socket.send((json.dumps(message_data) + '\n').encode('utf-8'))
+                            metadata_json = json.dumps(message_data) + '\n'
+                            receiver_socket.send(metadata_json.encode('utf-8'))
+                            print(f"[FILE] Metadata forwarded to {recipient}")
                         except Exception as e:
-                            print(f"[ERROR] Could not send metadata to {recipient}: {e}")
-                            error = {
-                                'type': 'error',
-                                'message': f'Failed to reach {recipient}'
-                            }
-                            json_msg = json.dumps(error) + '\n'
+                            print(f"[FILE] ✗ Failed to send metadata: {e}")
+                            
+                            with transfers_lock:
+                                del active_transfers[username]
+                                del active_transfers[recipient]
+                            
+                            error_data = {'type': 'error', 'message': 'Failed to initiate transfer'}
+                            json_msg = json.dumps(error_data) + '\n'
                             client.send(json_msg.encode('utf-8'))
                             continue
                         
-                        #   Enter relay mode and lock both users
+                        # Enter file transfer mode
                         in_file_transfer = True
                         file_metadata = message_data
-                        bytes_relayed = 0
                         expected_bytes = file_size
-                        
-                        with transfers_lock:
-                            active_transfers[username] = recipient
-                            active_transfers[recipient] = username
-                        
-                        print(f"[FILE] Entering relay mode: {file_name} ({file_size} bytes) → {recipient}")
-                        print(f"[FILE] Transfer locked: {username} ↔ {recipient}")
+                        bytes_relayed = 0
+                        print(f"[FILE] Entering relay mode for {file_name}")
                     
-                    #   Block group messages during transfer
+                    # Handle encrypted group messages
                     elif message_type == 'group':
-                        # Check if user is in active transfer
-                        with transfers_lock:
-                            if username in active_transfers:
-                                error = {
-                                    'type': 'error',
-                                    'message': 'Cannot send messages during file transfer'
-                                }
-                                json_msg = json.dumps(error) + '\n'
-                                client.send(json_msg.encode('utf-8'))
-                                continue
-                        
                         msg_text = message_data.get('message')
+                        encrypted_data = message_data.get('encrypted_data')  # NEW: encrypted payload
                         
-                        # Save to database using ChatHistoryManager
-                        chat_history.save_message(username, 'group', msg_text, 'group')
-                        
-                        broadcast_data = {
+                        # Broadcast encrypted message to all except sender
+                        group_data = {
                             'type': 'group',
                             'from': username,
-                            'message': msg_text
+                            'message': msg_text if msg_text else '[Encrypted Message]',
+                            'encrypted_data': encrypted_data,  # Forward encrypted data
+                            'timestamp': message_data.get('timestamp')
                         }
-                        broadcast(broadcast_data)
-                        print(f"[GROUP] {username}: {msg_text}")
+                        
+                        broadcast(group_data, exclude_user=username)
+                        
+                        # Save encrypted message to database
+                        if encrypted_data:
+                            chat_history.save_encrypted_message(
+                                sender=username,
+                                recipient='group',
+                                encrypted_data=encrypted_data,
+                                msg_type='group'
+                            )
+                        
+                        print(f"[GROUP] {username}: [Encrypted]")
                     
-                    #  Blocking DMs during transfer
+                    # Handle encrypted DMs
                     elif message_type == 'dm':
                         recipient = message_data.get('to')
                         msg_text = message_data.get('message')
+                        encrypted_data = message_data.get('encrypted_data')  # NEW: encrypted payload
                         
-                        # Check if either user is in active transfer
-                        with transfers_lock:
-                            if username in active_transfers:
-                                error = {
-                                    'type': 'error',
-                                    'message': 'Cannot send messages during file transfer'
-                                }
-                                json_msg = json.dumps(error) + '\n'
-                                client.send(json_msg.encode('utf-8'))
-                                continue
-                            
-                            if recipient in active_transfers:
-                                error = {
-                                    'type': 'error',
-                                    'message': f'{recipient} is in a file transfer. Message not sent.'
-                                }
-                                json_msg = json.dumps(error) + '\n'
-                                client.send(json_msg.encode('utf-8'))
-                                continue
+                        if not recipient:
+                            error_data = {'type': 'error', 'message': 'Recipient not specified'}
+                            json_msg = json.dumps(error_data) + '\n'
+                            client.send(json_msg.encode('utf-8'))
+                            continue
                         
-                        # Save to database using ChatHistoryManager
-                        chat_history.save_message(username, recipient, msg_text, 'dm')
-                        
+                        # Forward encrypted message to recipient
                         dm_data = {
                             'type': 'dm',
                             'from': username,
-                            'message': msg_text
+                            'to': recipient,
+                            'message': msg_text if msg_text else '[Encrypted Message]',
+                            'encrypted_data': encrypted_data,  # Forward encrypted data
+                            'timestamp': message_data.get('timestamp')
                         }
                         
                         if send_to_user(recipient, dm_data):
+                            # Send confirmation to sender
                             confirmation = {
                                 'type': 'dm',
                                 'from': username,
                                 'to': recipient,
-                                'message': msg_text,
+                                'message': msg_text if msg_text else '[Encrypted Message]',
+                                'encrypted_data': encrypted_data,
                                 'sent': True
                             }
                             json_msg = json.dumps(confirmation) + '\n'
                             client.send(json_msg.encode('utf-8'))
-                            print(f"[DM] {username} -> {recipient}: {msg_text}")
+                            
+                            # Save encrypted message to database
+                            if encrypted_data:
+                                chat_history.save_encrypted_message(
+                                    sender=username,
+                                    recipient=recipient,
+                                    encrypted_data=encrypted_data,
+                                    msg_type='dm'
+                                )
+                            
+                            print(f"[DM] {username} -> {recipient}: [Encrypted]")
                         else:
                             error_data = {
                                 'type': 'error',
@@ -348,12 +345,12 @@ def handle(client, username):
                             }
                             json_msg = json.dumps(error_data) + '\n'
                             client.send(json_msg.encode('utf-8'))
-                            
+                    
                     elif message_type == 'request_users':
                         send_user_list()
                     
                     elif message_type == 'request_history':
-                        # Client requesting chat history 
+                        # Client requesting encrypted chat history
                         chat_with = message_data.get('chat_with')
                         
                         messages = chat_history.get_message_history(
@@ -370,15 +367,14 @@ def handle(client, username):
                             }
                             json_msg = json.dumps(history_msg) + '\n'
                             client.send(json_msg.encode('utf-8'))
-                            print(f"[HISTORY] Sent {len(messages)} messages to {username}")
+                            print(f"[HISTORY] Sent {len(messages)} encrypted messages to {username}")
                         else:
                             print(f"[ERROR] Failed to fetch history for {username}")
                     
-                    #     Handle typing indicators
+                    # Handle typing indicators
                     elif message_type == 'typing':
                         to_user = message_data.get('to')
                         
-                        # Create typing indicator with correct sender
                         typing_data = {
                             'type': 'typing',
                             'from': username,
@@ -386,16 +382,14 @@ def handle(client, username):
                         }
                         
                         if to_user == 'group':
-                            # Broadcast to everyone except sender
                             broadcast(typing_data, exclude_user=username)
                             print(f"[TYPING] {username} typing in group")
                         else:
-                            # Send to specific user
                             if send_to_user(to_user, typing_data):
                                 print(f"[TYPING] {username} typing to {to_user}")
                             else:
                                 print(f"[TYPING] Failed: {to_user} not online")
-                            
+                    
                 except json.JSONDecodeError as e:
                     print(f"[ERROR] JSON decode error from {username}: {e}")
                     
@@ -403,7 +397,7 @@ def handle(client, username):
             print(f"[ERROR] Error handling {username}: {e}")
             break
     
-    #   Cleanup - clear any active transfers
+    # Cleanup - clear any active transfers
     with transfers_lock:
         if username in active_transfers:
             del active_transfers[username]
