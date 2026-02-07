@@ -5,8 +5,10 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:open_file/open_file.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
 import 'package:sajilo_chat/utilities.dart';
 import 'package:sajilo_chat/chat_history_handler.dart';
+import 'package:sajilo_chat/crypto_manager.dart';
 import 'message_bubble.dart';
 import 'file_transfer_handler.dart';
 
@@ -15,6 +17,8 @@ class ChatScreen extends StatefulWidget {
   final String username;
   final String chatWith;
   final ChatHistoryHandler historyHandler;
+  final CryptoManager cryptoManager;  // NEW: Crypto manager
+  final String serverHost;
 
   const ChatScreen({
     super.key,
@@ -22,6 +26,8 @@ class ChatScreen extends StatefulWidget {
     required this.username,
     required this.chatWith,
     required this.historyHandler,
+    required this.cryptoManager,
+    required this.serverHost,
   });
 
   @override
@@ -44,10 +50,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   // History loading state
   bool _historyLoaded = false;
   
-  //    NEW: Typing indicator state
+  // Typing indicator state
   bool _otherUserTyping = false;
   Timer? _typingTimer;
   Timer? _typingDebouncer;
+  
+  // E2EE state
+  bool _encryptionReady = false;
+  bool _fetchingKeys = false;
 
   @override
   void initState() {
@@ -104,13 +114,122 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
     
     _setupListener();
-    _requestHistory();
+    _initializeEncryption();
   }
+  
+  /// E2EE: Initialize encryption for this chat
+  Future<void> _initializeEncryption() async {
+    if (widget.chatWith == 'group') {
+      // Group chat encryption not implemented in this version
+      // You could use a shared group key or pairwise encryption
+      setState(() => _encryptionReady = true);
+      _loadHistoryWithCache();
+      return;
+    }
+    
+    setState(() => _fetchingKeys = true);
+    
+    try {
+      print('[E2EE] Initializing encryption for chat with ${widget.chatWith}');
+      
+      // Check if we already have a session key
+      if (widget.cryptoManager.hasSessionKey(widget.chatWith)) {
+        print('[E2EE] Session key already exists');
+        setState(() {
+          _encryptionReady = true;
+          _fetchingKeys = false;
+        });
+        _loadHistoryWithCache();
+        return;
+      }
+      
+      // Fetch the other user's public key from server
+      print('[E2EE] Fetching public key for ${widget.chatWith}');
+      final response = await http.get(
+        Uri.parse('http://${widget.serverHost}:5001/api/keys/get/${widget.chatWith}'),
+      ).timeout(Duration(seconds: 5));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final publicKey = data['public_key'];
+        
+        // Store the public key
+        widget.cryptoManager.storePublicKey(widget.chatWith, publicKey);
+        print('[E2EE] Public key stored for ${widget.chatWith}');
+        
+        // Derive session key
+        await widget.cryptoManager.deriveSessionKey(widget.chatWith);
+        print('[E2EE] Session key derived');
+        
+        setState(() {
+          _encryptionReady = true;
+          _fetchingKeys = false;
+        });
+        
+        // Request history after encryption is ready
+        _loadHistoryWithCache();
+        
+        // Show encryption ready notification
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.lock, color: Colors.white, size: 20),
+                SizedBox(width: 12),
+                Text('End-to-end encryption enabled 🔐', 
+                     style: GoogleFonts.poppins(fontSize: 13)),
+              ],
+            ),
+            backgroundColor: Color(0xFF26DE81),
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      } else {
+        throw Exception('Failed to fetch public key');
+      }
+      
+    } catch (e) {
+      print('[E2EE] Error initializing encryption: $e');
+      setState(() => _fetchingKeys = false);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Warning: Could not establish encryption. Try again later.'),
+          backgroundColor: Colors.orange,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      
+      // Still allow chat but without encryption
+      setState(() => _encryptionReady = false);
+      _loadHistoryWithCache();
+    }
+  }
+    
+  void _loadHistoryWithCache() {
+        print('[ChatScreen] Loading history for ${widget.chatWith}');
+        
+        // First, check if we have cached history
+        final cachedHistory = widget.historyHandler.getCachedHistory(widget.chatWith);
+        
+        if (cachedHistory != null && cachedHistory.isNotEmpty) {
+          print('[ChatScreen] Found ${cachedHistory.length} messages in cache');
+          setState(() {
+            _messages.clear();
+            _messages.addAll(cachedHistory);
+            _historyLoaded = true;
+          });
+          _scrollToBottom();
+        }
+        
+        // Request fresh history from server (will update if there are new messages)
+        _requestHistory();
+    }
 
   void _requestHistory() {
-    print('[ChatScreen] Requesting history for ${widget.chatWith}');
-    widget.historyHandler.requestHistory(widget.chatWith);
-  }
+    print('[ChatScreen] Requesting history from server for ${widget.chatWith}');
+    widget.historyHandler.requestHistory(widget.chatWith);  }
 
   void _setupListener() {
     _socketSubscription = widget.socket.stream.listen(
@@ -143,54 +262,29 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             else if (type == 'file_transfer_end') {
               _fileHandler.handleTransferEnd(jsonData);
             }
-            //    Typing indicator
+            // Typing indicator
             else if (type == 'typing') {
               final from = jsonData['from'];
               if (from == widget.chatWith || (widget.chatWith == 'group' && from != widget.username)) {
                 _handleTypingIndicator();
               }
             }
-            // History handling
+            // History handling - ENCRYPTED
             else if (type == 'history') {
-              final historyMessages = widget.historyHandler.processHistoryData(jsonData);
-              setState(() {
-                _historyLoaded = true;
-                _messages.clear();
-                _messages.addAll(historyMessages);
-              });
-              _scrollToBottom();
-              print('[ChatScreen] Loaded ${historyMessages.length} messages from history');
+              _handleEncryptedHistory(jsonData);
             }
             // Group message handling
             else if (type == 'group' && widget.chatWith == 'group') {
-              final newMessage = {
-                'from': jsonData['from'],
-                'message': jsonData['message'],
-                'isMe': jsonData['from'] == widget.username,
-              };
-              setState(() {
-                _messages.add(newMessage);
-              });
-              widget.historyHandler.addMessageToCache('group', newMessage);
-              _scrollToBottom();
+              _handleIncomingGroupMessage(jsonData);
             } 
-            // Direct message handling
+            // Direct message handling - ENCRYPTED
             else if (type == 'dm') {
               final from = jsonData['from'];
               final to = jsonData['to'];
 
               if ((from == widget.username && to == widget.chatWith) ||
                   (from == widget.chatWith)) {
-                final newMessage = {
-                  'from': from,
-                  'message': jsonData['message'],
-                  'isMe': from == widget.username,
-                };
-                setState(() {
-                  _messages.add(newMessage);
-                });
-                widget.historyHandler.addMessageToCache(widget.chatWith, newMessage);
-                _scrollToBottom();
+                _handleIncomingDM(jsonData);
               }
             }
           } catch (e) {
@@ -201,8 +295,134 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       cancelOnError: false,
     );
   }
+  
+  /// E2EE: Handle encrypted history
+  Future<void> _handleEncryptedHistory(Map<String, dynamic> jsonData) async {
+    try {
+      final messages = jsonData['messages'] as List;
+      final decryptedMessages = <Map<String, dynamic>>[];
+      
+      for (var msg in messages) {
+        try {
+          String displayMessage;
+          
+          // Check if message has encrypted_data
+          if (msg.containsKey('ciphertext') && widget.chatWith != 'group' && _encryptionReady) {
+            // Decrypt the message
+            final encryptedData = {
+              'ciphertext': msg['ciphertext'],
+              'nonce': msg['nonce'],
+              'mac': msg['mac'],
+            };
+            
+            displayMessage = await widget.cryptoManager.decryptMessage(
+              widget.chatWith,
+              encryptedData,
+            );
+          } else {
+            // Fallback for unencrypted or group messages
+            displayMessage = msg['message'] ?? '[Unable to decrypt]';
+          }
+          
+          decryptedMessages.add({
+            'from': msg['from'],
+            'message': displayMessage,
+            'isMe': msg['from'] == widget.username,
+            'timestamp': msg['timestamp'],
+            'type': msg['type'],
+          });
+        } catch (e) {
+          print('[E2EE] Failed to decrypt history message: $e');
+          // Add placeholder for failed decryption
+          decryptedMessages.add({
+            'from': msg['from'],
+            'message': '[Decryption failed]',
+            'isMe': msg['from'] == widget.username,
+            'timestamp': msg['timestamp'],
+            'type': msg['type'],
+          });
+        }
+      }
+      
+      setState(() {
+        _historyLoaded = true;
+        _messages.clear();
+        _messages.addAll(decryptedMessages);
+      });
+      _scrollToBottom();
+      print('[ChatScreen] Loaded ${decryptedMessages.length} messages from history');
+      widget.historyHandler.clearCache(widget.chatWith);
+      for (var msg in decryptedMessages) {
+        widget.historyHandler.addMessageToCache(widget.chatWith, msg);
+      }
+      
+    } catch (e) {
+      print('[E2EE] Error handling encrypted history: $e');
+    }
+  }
+  
+  /// E2EE: Handle incoming encrypted DM
+  Future<void> _handleIncomingDM(Map<String, dynamic> jsonData) async {
+    try {
+      final from = jsonData['from'];
+      String displayMessage;
+      
+      // Check if message is encrypted
+      if (jsonData.containsKey('encrypted_data') && _encryptionReady) {
+        final encryptedData = jsonData['encrypted_data'];
+        displayMessage = await widget.cryptoManager.decryptMessage(
+          widget.chatWith,
+          encryptedData,
+        );
+      } else {
+        // Fallback for unencrypted messages
+        displayMessage = jsonData['message'] ?? '[No message]';
+      }
+      
+      final newMessage = {
+        'from': from,
+        'message': displayMessage,
+        'isMe': from == widget.username,
+      };
+      
+      setState(() {
+        _messages.add(newMessage);
+      });
+      widget.historyHandler.addMessageToCache(widget.chatWith, newMessage);
+      _scrollToBottom();
+      
+    } catch (e) {
+      print('[E2EE] Failed to decrypt incoming message: $e');
+      
+      // Add placeholder for failed decryption
+      final newMessage = {
+        'from': jsonData['from'],
+        'message': '[Decryption failed - key mismatch?]',
+        'isMe': jsonData['from'] == widget.username,
+      };
+      
+      setState(() {
+        _messages.add(newMessage);
+      });
+      _scrollToBottom();
+    }
+  }
+  
+  /// Handle incoming group message (not encrypted in this implementation)
+  void _handleIncomingGroupMessage(Map<String, dynamic> jsonData) {
+    final newMessage = {
+      'from': jsonData['from'],
+      'message': jsonData['message'],
+      'isMe': jsonData['from'] == widget.username,
+    };
+    setState(() {
+      _messages.add(newMessage);
+    });
+    widget.historyHandler.addMessageToCache('group', newMessage);
+    _scrollToBottom();
+  }
 
-  //    NEW: Handle typing indicator
+  // Handle typing indicator
   void _handleTypingIndicator() {
     setState(() => _otherUserTyping = true);
     _typingTimer?.cancel();
@@ -213,7 +433,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     });
   }
 
-  //    NEW: Send typing indicator
+  // Send typing indicator
   void _sendTypingIndicator() {
     _typingDebouncer?.cancel();
     _typingDebouncer = Timer(Duration(milliseconds: 500), () {
@@ -238,49 +458,61 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     });
   }
 
-  void _sendMessage() {
+  /// E2EE: Send encrypted message
+  Future<void> _sendMessage() async {
     if (_messageController.text.trim().isEmpty) return;
 
-    final messageData = widget.chatWith == 'group'
-        ? {
-            'type': 'group',
-            'message': _messageController.text,
-          }
-        : {
-            'type': 'dm',
-            'to': widget.chatWith,
-            'message': _messageController.text,
-          };
-
-    final msg = '${jsonEncode(messageData)}\n';
-    widget.socket.write(utf8.encode(msg));
+    final plaintext = _messageController.text.trim();
     _messageController.clear();
-  }
-  
-  Future<void> _openFile(String filePath) async {
+
     try {
-      print('[OPEN_FILE] Attempting to open: $filePath');
-      final result = await OpenFile.open(filePath);
-      
-      if (result.type != ResultType.done) {
-        print('[OPEN_FILE] Error: ${result.message}');
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not open file: ${result.message}'),
-            backgroundColor: Colors.orange,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+      if (widget.chatWith == 'group') {
+        // Group chat - send unencrypted for now
+        final groupData = {
+          'type': 'group',
+          'from': widget.username,
+          'message': plaintext,
+          'timestamp': DateTime.now().toIso8601String(),
+        };
+        
+        final msg = '${jsonEncode(groupData)}\n';
+        widget.socket.write(utf8.encode(msg));
+        
       } else {
-        print('[OPEN_FILE] ✓ File opened successfully');
+        // DM - encrypt the message
+        if (!_encryptionReady) {
+          throw Exception('Encryption not ready. Please wait...');
+        }
+        
+        // Encrypt the message
+        final encryptedData = await widget.cryptoManager.encryptMessage(
+          widget.chatWith,
+          plaintext,
+        );
+        
+        // Send encrypted message
+        final dmData = {
+          'type': 'dm',
+          'from': widget.username,
+          'to': widget.chatWith,
+          'message': '[Encrypted]',  // Placeholder text
+          'encrypted_data': encryptedData,
+          'timestamp': DateTime.now().toIso8601String(),
+        };
+        
+        final msg = '${jsonEncode(dmData)}\n';
+        widget.socket.write(utf8.encode(msg));
+        
+        // Optional: Ratchet session key for forward secrecy
+        // Uncomment to enable key ratcheting after each message
+        // await widget.cryptoManager.ratchetSessionKey(widget.chatWith);
       }
+      
     } catch (e) {
-      print('[OPEN_FILE] Exception: $e');
-      if (!mounted) return;
+      print('[E2EE] Error sending message: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Error opening file: $e'),
+          content: Text('Failed to send message: $e'),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
@@ -292,74 +524,84 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       final result = await FilePicker.platform.pickFiles();
       
-      if (result != null && result.files.isNotEmpty) {
-        final platformFile = result.files.first;
-        final filePath = platformFile.path;
-        
-        if (filePath == null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not access file')),
-          );
-          return;
-        }
-        
-        final file = File(filePath);
-        final fileSize = await file.length();
-        final fileName = platformFile.name;
-        
-        const maxSize = 50 * 1024 * 1024; // 50 MB
-        if (fileSize > maxSize) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('File too large. Maximum size: 50 MB'),
-              backgroundColor: Colors.red,
-            ),
-          );
-          return;
-        }
-        
-        final confirmed = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text('Send File?', style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
-            content: Text(
-              'Send "$fileName" (${(fileSize / 1024).toStringAsFixed(1)} KB) to ${widget.chatWith}?\n\n'
-              'Note: Recipient must be online.',
-              style: GoogleFonts.poppins(),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: Text('Cancel', style: GoogleFonts.poppins(color: Colors.grey)),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: Text('Send', style: GoogleFonts.poppins(color: Color(0xFF6C63FF), fontWeight: FontWeight.w600)),
-              ),
-            ],
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+      
+      final file = File(result.files.single.path!);
+      final fileName = result.files.single.name;
+      final fileSize = await file.length();
+      
+      // Check file size (limit to 50MB)
+      if (fileSize > 50 * 1024 * 1024) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('File too large. Maximum size is 50MB.'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
           ),
         );
-        
-        if (confirmed == true) {
-          setState(() {
-            _transferFileName = fileName;
-            _showFileProgress = true;
-            _fileTransferProgress = 0.0;
-          });
-          
-          await _fileHandler.sendFile(
-            file: file,
-            socket: widget.socket.socket,
-            senderUsername: widget.username,
-            recipientUsername: widget.chatWith,
-          );
-        }
+        return;
+      }
+      
+      if (widget.chatWith == 'group') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('File sharing in group chat not supported yet'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+      
+      // Show sending indicator
+      setState(() {
+        _showFileProgress = true;
+        _transferFileName = fileName;
+      });
+      
+      // Send file
+      await _fileHandler.sendFile(
+        file: file,
+        socket: widget.socket.socket,
+        senderUsername: widget.username,
+        recipientUsername: widget.chatWith,
+      );
+      
+    } catch (e) {
+      print('[File] Error picking/sending file: $e');
+      setState(() => _showFileProgress = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to send file: $e'),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _openFile(String filePath) async {
+    try {
+      final result = await OpenFile.open(filePath);
+      if (result.type != ResultType.done) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not open file: ${result.message}'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     } catch (e) {
-      print('[FILE_PICKER] Error: $e');
-      if (!mounted) return;
+      print('[File] Error opening file: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error picking file: $e')),
+        SnackBar(
+          content: Text('Error opening file: $e'),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   }
@@ -369,18 +611,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _socketSubscription?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
-    _fileHandler.dispose();
     _typingTimer?.cancel();
     _typingDebouncer?.cancel();
+    _fileHandler.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    //    Distinct colors for Group vs DM
-    final bool isGroup = widget.chatWith == 'group';
-    final Color primaryColor = isGroup ? Color(0xFF6C63FF) : Color(0xFF8B7FFF);
-    final Color accentColor = isGroup ? Color(0xFF5A52D5) : Color(0xFF9D8FFF);
+    final isGroup = widget.chatWith == 'group';
+    final primaryColor = Color(0xFF6C63FF);
+    final accentColor = Color(0xFF8B7FFF);
     
     return Scaffold(
       backgroundColor: Color(0xFFF5F5FA),
@@ -388,27 +629,34 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         backgroundColor: primaryColor,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          icon: const Icon(Icons.arrow_back_ios_rounded, color: Colors.white),
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(
           children: [
-            //    Animated avatar
             Hero(
-              tag: 'avatar_${widget.chatWith}',
-              child: CircleAvatar(
-                radius: 20,
-                backgroundColor: Colors.white,
-                child: widget.chatWith == 'group'
-                    ? Icon(Icons.group, color: primaryColor, size: 24)
-                    : Text(
-                        widget.chatWith[0].toUpperCase(),
-                        style: GoogleFonts.poppins(
-                          color: primaryColor,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18,
+              tag: 'avatar_${isGroup ? "group" : widget.chatWith}',
+              child: Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: [Colors.white.withOpacity(0.3), Colors.white.withOpacity(0.1)],
+                  ),
+                ),
+                child: CircleAvatar(
+                  radius: 20,
+                  backgroundColor: Colors.transparent,
+                  child: isGroup
+                      ? Icon(Icons.group_rounded, color: Colors.white, size: 24)
+                      : Text(
+                          widget.chatWith[0].toUpperCase(),
+                          style: GoogleFonts.poppins(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
+                ),
               ),
             ),
             const SizedBox(width: 12),
@@ -417,23 +665,61 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    widget.chatWith == 'group' ? 'Group Chat' : widget.chatWith,
+                    isGroup ? 'Group Chat' : widget.chatWith,
                     style: GoogleFonts.poppins(
                       color: Colors.white,
-                      fontSize: 17,
+                      fontSize: 18,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  //    Typing indicator in appbar
-                  if (_otherUserTyping)
-                    Text(
-                      'typing...',
-                      style: GoogleFonts.poppins(
-                        color: Colors.white70,
-                        fontSize: 12,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
+                  Row(
+                    children: [
+                      // E2EE indicator
+                      if (_encryptionReady && !isGroup)
+                        Row(
+                          children: [
+                            Icon(Icons.lock, color: Colors.white70, size: 12),
+                            SizedBox(width: 4),
+                            Text(
+                              'Encrypted',
+                              style: GoogleFonts.poppins(
+                                color: Colors.white70,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        )
+                      else if (_fetchingKeys && !isGroup)
+                        Row(
+                          children: [
+                            SizedBox(
+                              width: 10,
+                              height: 10,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation(Colors.white70),
+                              ),
+                            ),
+                            SizedBox(width: 6),
+                            Text(
+                              'Establishing encryption...',
+                              style: GoogleFonts.poppins(
+                                color: Colors.white70,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        )
+                      else if (!isGroup)
+                        Text(
+                          'Unencrypted',
+                          style: GoogleFonts.poppins(
+                            color: Colors.white70,
+                            fontSize: 11,
+                          ),
+                        ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -442,92 +728,38 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       ),
       body: Column(
         children: [
-          // History loading indicator
-          if (!_historyLoaded)
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: accentColor.withOpacity(0.1),
-                border: Border(
-                  bottom: BorderSide(color: accentColor.withOpacity(0.2)),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation(primaryColor),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    'Loading history...',
-                    style: GoogleFonts.poppins(fontSize: 13, color: primaryColor),
-                  ),
-                ],
-              ),
-            ),
-          
           // File transfer progress
           if (_showFileProgress)
             Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                boxShadow: [
-                  BoxShadow(
-                    color: primaryColor.withOpacity(0.1),
-                    blurRadius: 10,
-                    offset: Offset(0, 4),
-                  ),
-                ],
-              ),
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              color: primaryColor.withOpacity(0.1),
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Icon(Icons.file_upload_outlined, size: 24, color: primaryColor),
-                      const SizedBox(width: 12),
+                      Icon(Icons.file_upload_outlined, color: primaryColor, size: 20),
+                      SizedBox(width: 8),
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _transferFileName,
-                              style: GoogleFonts.poppins(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Sending file...',
-                              style: GoogleFonts.poppins(
-                                fontSize: 12,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ],
+                        child: Text(
+                          'Transferring: $_transferFileName',
+                          style: GoogleFonts.poppins(fontSize: 13),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       Text(
-                        '${(_fileTransferProgress * 100).toStringAsFixed(0)}%',
+                        '${(_fileTransferProgress * 100).toInt()}%',
                         style: GoogleFonts.poppins(
-                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
                           color: primaryColor,
-                          fontSize: 16,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  SizedBox(height: 8),
                   ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(3),
                     child: LinearProgressIndicator(
                       value: _fileTransferProgress,
                       backgroundColor: Colors.grey[200],
@@ -547,7 +779,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(
-                          isGroup ? Icons.group_outlined : Icons.chat_bubble_outline,
+                          isGroup ? Icons.group_outlined : Icons.lock_outline,
                           size: 80,
                           color: Colors.grey[300],
                         ),
@@ -562,7 +794,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          isGroup ? 'Start the group conversation!' : 'Say hello!',
+                          isGroup ? 'Start the group conversation!' : 
+                          (_encryptionReady ? 'Your messages are encrypted 🔐' : 'Say hello!'),
                           style: GoogleFonts.poppins(
                             fontSize: 14,
                             color: Colors.grey[400],
@@ -576,13 +809,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
                     itemCount: _messages.length + (_otherUserTyping ? 1 : 0),
                     itemBuilder: (context, index) {
-                      //    Show typing indicator at end
+                      // Show typing indicator at end
                       if (_otherUserTyping && index == _messages.length) {
                         return _buildTypingIndicator(primaryColor);
                       }
                       
                       final msg = _messages[index];
-                      //    Fade-in animation
+                      // Fade-in animation
                       return TweenAnimationBuilder<double>(
                         duration: Duration(milliseconds: 300),
                         tween: Tween(begin: 0.0, end: 1.0),
@@ -634,7 +867,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 children: [
                   IconButton(
                     icon: Icon(Icons.attach_file_rounded, color: primaryColor),
-                    onPressed: _pickAndSendFile,
+                    onPressed: !isGroup ? _pickAndSendFile : null,
                     tooltip: 'Send file',
                   ),
                   
@@ -648,7 +881,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                         controller: _messageController,
                         style: GoogleFonts.poppins(),
                         decoration: InputDecoration(
-                          hintText: 'Type a message',
+                          hintText: _encryptionReady && !isGroup 
+                              ? 'Type an encrypted message...' 
+                              : 'Type a message...',
                           hintStyle: GoogleFonts.poppins(color: Colors.grey[400]),
                           border: InputBorder.none,
                           contentPadding: const EdgeInsets.symmetric(
@@ -697,7 +932,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  //    Typing indicator widget
+  // Typing indicator widget
   Widget _buildTypingIndicator(Color color) {
     return Padding(
       padding: const EdgeInsets.only(left: 16, bottom: 8, top: 4),

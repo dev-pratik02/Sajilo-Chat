@@ -11,20 +11,34 @@ class ChatHistoryHandler {
   final Map<String, List<Map<String, dynamic>>> _historyCache = {};
   final Map<String, bool> _loadingStates = {};
   
+  // Track when history was last loaded
+  final Map<String, DateTime> _lastLoadTime = {};
+  
   ChatHistoryHandler({
     required this.socket,
     required this.username,
   });
   
   /// Request chat history from server
-  Future<void> requestHistory(String chatWith) async {
+  /// forceReload: if true, ignores cache and always requests from server
+  Future<void> requestHistory(String chatWith, {bool forceReload = false}) async {
+    // Check if already actively loading (prevent duplicate simultaneous requests)
     if (_loadingStates[chatWith] == true) {
       print('[ChatHistory] Already loading history for $chatWith');
       return;
     }
     
+    // Check if we should use cached data (loaded within last 30 seconds)
+    if (!forceReload && _lastLoadTime.containsKey(chatWith)) {
+      final timeSinceLoad = DateTime.now().difference(_lastLoadTime[chatWith]!);
+      if (timeSinceLoad.inSeconds < 30) {
+        print('[ChatHistory] Using cached history for $chatWith (${timeSinceLoad.inSeconds}s old)');
+        return;
+      }
+    }
+    
     _loadingStates[chatWith] = true;
-    print('[ChatHistory] Requesting history for $chatWith');
+    print('[ChatHistory] Requesting history for $chatWith ${forceReload ? "(force reload)" : ""}');
     
     final request = jsonEncode({
       'type': 'request_history',
@@ -34,7 +48,7 @@ class ChatHistoryHandler {
     socket.write(utf8.encode(request));
   }
   
-  /// to process incoming history data
+  /// Process incoming history data
   List<Map<String, dynamic>> processHistoryData(Map<String, dynamic> data) {
     final chatWith = data['chat_with'] as String;
     final messages = data['messages'] as List;
@@ -51,9 +65,10 @@ class ChatHistoryHandler {
       });
     }
     
-    // Cache the history
+    // Cache the history and record load time
     _historyCache[chatWith] = processedMessages;
     _loadingStates[chatWith] = false;
+    _lastLoadTime[chatWith] = DateTime.now();
     
     print('[ChatHistory] Loaded ${processedMessages.length} messages for $chatWith');
     return processedMessages;
@@ -69,23 +84,32 @@ class ChatHistoryHandler {
     return _loadingStates[chatWith] ?? false;
   }
   
-  /// Clear cache for a specific chat
+  /// Clear cache for a specific chat (forces reload on next request)
   void clearCache(String chatWith) {
     _historyCache.remove(chatWith);
     _loadingStates.remove(chatWith);
+    _lastLoadTime.remove(chatWith);
   }
   
   /// Clear all cached histories
   void clearAllCache() {
     _historyCache.clear();
     _loadingStates.clear();
+    _lastLoadTime.clear();
   }
   
   /// Add a new message to cache
   void addMessageToCache(String chatWith, Map<String, dynamic> message) {
     if (_historyCache.containsKey(chatWith)) {
       _historyCache[chatWith]!.add(message);
+      // Update last load time so cache stays fresh
+      _lastLoadTime[chatWith] = DateTime.now();
     }
+  }
+  
+  /// Reset loading state (call this if history request fails or times out)
+  void resetLoadingState(String chatWith) {
+    _loadingStates[chatWith] = false;
   }
 }
 

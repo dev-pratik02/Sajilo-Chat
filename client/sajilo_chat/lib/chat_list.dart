@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:sajilo_chat/utilities.dart';
 import 'package:sajilo_chat/chat_history_handler.dart';
 import 'chat_screen.dart';
+import 'package:sajilo_chat/crypto_manager.dart';
 
 class ChatsListPage extends StatefulWidget {
   final SocketWrapper? socket;
@@ -14,6 +15,7 @@ class ChatsListPage extends StatefulWidget {
   final String serverHost;
   final int serverPort;
   final String? accessToken;
+  final CryptoManager? cryptoManager;
 
   const ChatsListPage({
     super.key,
@@ -22,6 +24,7 @@ class ChatsListPage extends StatefulWidget {
     this.serverHost = '127.0.0.1',
     this.serverPort = 5050,
     this.accessToken,
+    this.cryptoManager,
   });
 
   @override
@@ -130,6 +133,7 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware, TickerPr
             serverHost: widget.serverHost,
             serverPort: widget.serverPort,
             accessToken: widget.accessToken,
+            cryptoManager: widget.cryptoManager, 
           ),
         ),
       );
@@ -306,6 +310,8 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware, TickerPr
           username: widget.username!,
           chatWith: chatWith,
           historyHandler: _historyHandler,
+          cryptoManager: widget.cryptoManager!,  
+          serverHost: widget.serverHost,   
         ),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           const begin = Offset(1.0, 0.0);

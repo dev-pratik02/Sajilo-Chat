@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:sajilo_chat/utilities.dart';
 import 'package:sajilo_chat/chat_list.dart';
+import 'package:sajilo_chat/crypto_manager.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -28,6 +29,9 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   
   late AnimationController _logoAnimationController;
   late Animation<double> _logoAnimation;
+  
+  // E2EE: Crypto manager instance
+  final CryptoManager _cryptoManager = CryptoManager();
 
   @override
   void initState() {
@@ -63,10 +67,23 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     final password = _passwordController.text.trim();
 
     try {
+      // E2EE Step 1: Initialize crypto manager and generate keys
+      print('[E2EE] Initializing crypto for new user: $username');
+      await _cryptoManager.initialize(username);
+      
+      // E2EE Step 2: Get public key to send to server
+      final publicKey = await _cryptoManager.getPublicIdentityKey();
+      print('[E2EE] Generated public key for registration');
+      
+      // E2EE Step 3: Register with public key
       final response = await http.post(
         Uri.parse('http://$host:5001/auth/register'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'username': username, 'password': password}),
+        body: jsonEncode({
+          'username': username,
+          'password': password,
+          'public_key': publicKey,  // NEW: Send public key
+        }),
       );
 
       if (response.statusCode == 201) {
@@ -77,7 +94,8 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
               children: [
                 Icon(Icons.check_circle, color: Colors.white),
                 SizedBox(width: 12),
-                Text('Registration successful!', style: GoogleFonts.poppins()),
+                Text('Registration successful! 🔐 E2EE enabled', 
+                     style: GoogleFonts.poppins()),
               ],
             ),
             backgroundColor: Color(0xFF26DE81),
@@ -122,6 +140,15 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       final username = _usernameController.text.trim();
       final password = _passwordController.text.trim();
 
+      // E2EE Step 1: Initialize crypto manager (loads existing keys or creates new)
+      print('[E2EE] Initializing crypto for user: $username');
+      await _cryptoManager.initialize(username);
+      
+      // E2EE Step 2: Get public key
+      final publicKey = await _cryptoManager.getPublicIdentityKey();
+      print('[E2EE] Loaded/Generated public key');
+      
+      // Login to Flask API
       final loginResponse = await http
           .post(
             Uri.parse('http://$host:5001/auth/login'),
@@ -136,7 +163,25 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       }
 
       final accessToken = jsonDecode(loginResponse.body)['access_token'];
+      
+      // E2EE Step 3: Upload/update public key to server
+      print('[E2EE] Uploading public key to server');
+      try {
+        await http.post(
+          Uri.parse('http://$host:5001/api/keys/upload'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'username': username,
+            'public_key': publicKey,
+          }),
+        );
+        print('[E2EE] Public key uploaded successfully');
+      } catch (e) {
+        print('[E2EE] Warning: Failed to upload public key: $e');
+        // Continue anyway - key might already exist
+      }
 
+      // Connect to socket server
       final socket = await Socket.connect(
         host,
         port,
@@ -179,6 +224,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                     serverHost: host,
                     serverPort: port,
                     accessToken: accessToken,
+                    cryptoManager: _cryptoManager,  // NEW: Pass crypto manager
                   ),
                   transitionsBuilder: (context, animation, secondaryAnimation, child) {
                     return FadeTransition(opacity: animation, child: child);
@@ -219,7 +265,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     return Scaffold(
       body: Stack(
         children: [
-          //    Gradient background
+          // Gradient background
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -234,10 +280,10 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
             ),
           ),
           
-          //    Decorative circles
+          // Floating circles decoration
           Positioned(
             top: -100,
-            right: -100,
+            left: -100,
             child: Container(
               width: 300,
               height: 300,
@@ -248,11 +294,11 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
             ),
           ),
           Positioned(
-            bottom: -50,
-            left: -50,
+            bottom: -150,
+            right: -100,
             child: Container(
-              width: 200,
-              height: 200,
+              width: 400,
+              height: 400,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: Colors.white.withOpacity(0.1),
@@ -260,20 +306,21 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
             ),
           ),
           
+          // Main content
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                padding: const EdgeInsets.all(24),
                 child: Form(
                   key: _formKey,
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      //    Animated logo
+                      // Logo with animation
                       ScaleTransition(
                         scale: _logoAnimation,
                         child: Container(
-                          padding: const EdgeInsets.all(24),
+                          padding: EdgeInsets.all(24),
                           decoration: BoxDecoration(
                             color: Colors.white,
                             shape: BoxShape.circle,
@@ -286,7 +333,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                             ],
                           ),
                           child: Icon(
-                            Icons.chat_bubble_rounded,
+                            Icons.lock_rounded,  // Changed to lock icon for E2EE
                             size: 60,
                             color: Color(0xFF6C63FF),
                           ),
@@ -301,6 +348,31 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                           fontWeight: FontWeight.bold,
                           color: Colors.white,
                           letterSpacing: 1.2,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      // E2EE badge
+                      Container(
+                        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.white.withOpacity(0.5)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.security, color: Colors.white, size: 16),
+                            SizedBox(width: 6),
+                            Text(
+                              'End-to-End Encrypted',
+                              style: GoogleFonts.poppins(
+                                fontSize: 12,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -427,49 +499,22 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
+                      if (_isRegisterMode)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            'Generating encryption keys 🔐',
+                            style: GoogleFonts.poppins(
+                              color: Colors.grey[600],
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
               ),
             ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuickStartItem(String number, String text) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Container(
-            width: 24,
-            height: 24,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
-              shape: BoxShape.circle,
-            ),
-            child: Center(
-              child: Text(
-                number,
-                style: GoogleFonts.poppins(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ),
-          SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              text,
-              style: GoogleFonts.poppins(
-                color: Colors.white.withOpacity(0.9),
-                fontSize: 12,
-              ),
-            ),
-          ),
         ],
       ),
     );
