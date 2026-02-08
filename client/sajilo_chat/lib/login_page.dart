@@ -340,14 +340,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                         validator: (v) =>
                             v?.isEmpty ?? true ? 'Enter server IP' : null,
                       ),
-                      const SizedBox(height: 16),
-                      _buildTextField(
-                        controller: _portController,
-                        hintText: 'Port',
-                        icon: Icons.power_rounded,
-                        keyboardType: TextInputType.number,
-                        validator: (v) => v?.isEmpty ?? true ? 'Enter port' : null,
-                      ),
                       const SizedBox(height: 32),
                       
                       SizedBox(
