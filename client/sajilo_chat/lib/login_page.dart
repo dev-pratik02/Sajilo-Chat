@@ -136,7 +136,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
 
     try {
       final host = _serverController.text.trim();
-      final port = 5050; // Port is fixed for socket connection
+      final port = 5050; // Port is   for socket connection
       final username = _usernameController.text.trim();
       final password = _passwordController.text.trim();
 

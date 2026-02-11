@@ -210,7 +210,7 @@ def handle(client, username):
                     
                     # Check if transfer complete
                     if current_transfer.bytes_relayed >= current_transfer.file_size:
-                        print(f"[FILE_RELAY] ✅ Complete: {current_transfer.file_name} "
+                        print(f"[FILE_RELAY]   Complete: {current_transfer.file_name} "
                               f"({current_transfer.bytes_relayed} bytes)")
                         
                         # Switch back to JSON mode

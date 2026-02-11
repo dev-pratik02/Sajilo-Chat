@@ -261,7 +261,7 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware, TickerPr
         encryptedData,
       );
       
-      print('[ChatList] ✅ Decrypted preview from $from: ${decryptedText.substring(0, decryptedText.length > 20 ? 20 : decryptedText.length)}...');
+      print('[ChatList]   Decrypted preview from $from: ${decryptedText.substring(0, decryptedText.length > 20 ? 20 : decryptedText.length)}...');
       
       // Update preview with decrypted text
       _updateChatPreview(from, decryptedText);
@@ -311,7 +311,7 @@ class _ChatsListPageState extends State<ChatsListPage> with RouteAware, TickerPr
         widget.cryptoManager!.storePublicKey(username, publicKey);
         await widget.cryptoManager!.deriveSessionKey(username);
         
-        print('[ChatList] ✅ Encryption established with $username');
+        print('[ChatList]   Encryption established with $username');
       } else {
         throw Exception('Failed to fetch public key: ${response.statusCode}');
       }

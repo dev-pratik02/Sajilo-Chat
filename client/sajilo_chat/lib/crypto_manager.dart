@@ -7,7 +7,7 @@ import 'package:crypto/crypto.dart' as crypto;
 /// Manages end-to-end encryption for messages
 /// Uses ECDH for key exchange and AES-GCM for message encryption
 /// 
-/// ✅ FIXED: Session key derivation now uses canonical ordering
+/// Session key derivation now uses canonical ordering
 class CryptoManager {
   // Cryptographic algorithms
   final _keyExchangeAlgo = X25519();
@@ -120,7 +120,7 @@ class CryptoManager {
     }
   }
   
-  /// ✅ FIXED: Derive session key with canonical ordering
+  ///  Derive session key with canonical ordering
   /// This ensures both users derive the SAME key
   Future<void> deriveSessionKey(String chatWith) async {
     if (_identityKeyPair == null) {
@@ -148,7 +148,7 @@ class CryptoManager {
       // Extract shared secret bytes
       final sharedSecretBytes = await sharedSecret.extractBytes();
       
-      // ✅ FIX: Use canonical (alphabetically sorted) username ordering
+      // Use canonical (alphabetically sorted) username ordering
       // This ensures both users use the SAME info string for HKDF
       final users = [_currentUsername!, chatWith]..sort();
       final canonicalInfo = 'sajilo_chat_session_${users[0]}_${users[1]}';
@@ -158,14 +158,14 @@ class CryptoManager {
       // Derive session key using HKDF (via SHA-256)
       final sessionKeyBytes = _hkdf(
         sharedSecretBytes,
-        info: utf8.encode(canonicalInfo),  // ✅ Both users use same string
+        info: utf8.encode(canonicalInfo),  //   Both users use same string
         length: 32, // 256 bits for AES-256
       );
       
       _sessionKeys[chatWith] = SecretKey(sessionKeyBytes);
       _messageCounters[chatWith] = 0;
       
-      print('[Crypto] ✅ Session key derived for: $chatWith');
+      print('[Crypto]   Session key derived for: $chatWith');
       print('[Crypto] Key fingerprint: ${_getKeyFingerprint(sessionKeyBytes)}');
       
     } catch (e) {
@@ -174,7 +174,7 @@ class CryptoManager {
     }
   }
   
-  /// Helper: Get key fingerprint for debugging (first 8 bytes as hex)
+  /// Get key fingerprint for debugging (first 8 bytes as hex)
   String _getKeyFingerprint(List<int> keyBytes) {
     return keyBytes.take(8).map((b) => b.toRadixString(16).padLeft(2, '0')).join(':');
   }
