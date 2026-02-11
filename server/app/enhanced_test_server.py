@@ -42,11 +42,11 @@ def test_message_save_detailed():
     })
     
     if response.status_code != 200:
-        print(f"  ❌ Login failed: {response.json()}")
+        print(f"   Login failed: {response.json()}")
         return
     
     token = response.json()['access_token']
-    print(f"  ✅ Got token: {token[:20]}...")
+    print(f"   Got token: {token[:20]}...")
     
     # Test 1: Save with ALL required fields
     print("\n3️⃣  Test 1: Save message with all required fields")
@@ -59,16 +59,16 @@ def test_message_save_detailed():
         'type': 'dm'
     }
     
-    print(f"  📤 Sending: {json.dumps(message_data, indent=2)}")
+    print(f"  Sending: {json.dumps(message_data, indent=2)}")
     response = requests.post(f"{BASE_URL}/api/messages/save", json=message_data)
     
-    print(f"  📥 Status Code: {response.status_code}")
-    print(f"  📥 Response: {json.dumps(response.json(), indent=2)}")
+    print(f"   Status Code: {response.status_code}")
+    print(f"   Response: {json.dumps(response.json(), indent=2)}")
     
     if response.status_code == 201:
-        print("  ✅ Message saved successfully!")
+        print("   Message saved successfully!")
     else:
-        print(f"  ❌ Failed: {response.json()}")
+        print(f"   Failed: {response.json()}")
         return
     
     # Test 2: Retrieve the message
@@ -82,12 +82,12 @@ def test_message_save_detailed():
         }
     )
     
-    print(f"  📥 Status Code: {response.status_code}")
+    print(f"   Status Code: {response.status_code}")
     result = response.json()
-    print(f"  📥 Response: {json.dumps(result, indent=2)}")
+    print(f"   Response: {json.dumps(result, indent=2)}")
     
     if response.status_code == 200 and result.get('messages'):
-        print(f"  ✅ Retrieved {len(result['messages'])} message(s)")
+        print(f"   Retrieved {len(result['messages'])} message(s)")
         
         # Verify message structure
         msg = result['messages'][0]
@@ -95,11 +95,11 @@ def test_message_save_detailed():
         required_fields = ['ciphertext', 'nonce', 'mac', 'from', 'to', 'type']
         for field in required_fields:
             if field in msg:
-                print(f"  ✅ {field}: present ({type(msg[field]).__name__})")
+                print(f"  {field}: present ({type(msg[field]).__name__})")
             else:
-                print(f"  ❌ {field}: MISSING")
+                print(f"  {field}: MISSING")
     else:
-        print(f"  ❌ Failed to retrieve: {result}")
+        print(f"   Failed to retrieve: {result}")
     
     # Test 3: Chat list
     print("\n6️⃣  Test 3: Get chat list")
@@ -108,22 +108,22 @@ def test_message_save_detailed():
         params={'username': TEST_USER1}
     )
     
-    print(f"  📥 Status Code: {response.status_code}")
+    print(f"  Status Code: {response.status_code}")
     result = response.json()
-    print(f"  📥 Response: {json.dumps(result, indent=2)}")
+    print(f"  Response: {json.dumps(result, indent=2)}")
     
     if response.status_code == 200:
         chats = result.get('chats', [])
-        print(f"  ✅ Retrieved {len(chats)} chat(s)")
+        print(f"   Retrieved {len(chats)} chat(s)")
         for chat in chats:
             print(f"    - {chat}")
     else:
-        print(f"  ❌ Failed: {result}")
+        print(f"  Failed: {result}")
     
     # Cleanup
     print("\n7️⃣  Cleanup: Deleting test data...")
     requests.delete(f"{BASE_URL}/api/messages/delete")
-    print("  ✅ Cleanup complete")
+    print("   Cleanup complete")
 
 
 def test_field_requirements():
@@ -181,11 +181,11 @@ def test_field_requirements():
         print(f"  Response: {response.json()}")
         
         if response.status_code == 201:
-            print("  ✅ Accepted")
+            print("  Accepted")
         elif response.status_code == 400:
-            print("  ⚠️  Validation error (expected)")
+            print("   Validation error (expected)")
         else:
-            print("  ❌ Unexpected error")
+            print("   Unexpected error")
 
 
 def test_database_connection():
@@ -195,9 +195,9 @@ def test_database_connection():
     print("\n1️⃣  Checking health endpoint...")
     try:
         response = requests.get(f"{BASE_URL}/health", timeout=2)
-        print(f"  ✅ Server responding: {response.json()}")
+        print(f"   Server responding: {response.json()}")
     except Exception as e:
-        print(f"  ❌ Server not responding: {e}")
+        print(f"   Server not responding: {e}")
         return False
     
     print("\n2️⃣  Checking if we can register a user (tests DB write)...")
@@ -209,13 +209,13 @@ def test_database_connection():
         })
         
         if response.status_code == 201:
-            print(f"  ✅ Database write successful")
+            print(f"   Database write successful")
             return True
         else:
-            print(f"  ❌ Database write failed: {response.json()}")
+            print(f"   Database write failed: {response.json()}")
             return False
     except Exception as e:
-        print(f"  ❌ Error: {e}")
+        print(f"   Error: {e}")
         return False
 
 
@@ -259,9 +259,9 @@ def test_encryption_data_format():
     response = requests.post(f"{BASE_URL}/api/messages/save", json=server_data)
     
     if response.status_code == 201:
-        print("  ✅ Format is correct!")
+        print("   Format is correct!")
     else:
-        print(f"  ❌ Format issue: {response.json()}")
+        print(f"   Format issue: {response.json()}")
 
 
 if __name__ == '__main__':
@@ -277,7 +277,7 @@ if __name__ == '__main__':
         test_field_requirements()
         test_message_save_detailed()
     else:
-        print("\n❌ Cannot proceed - database connection failed")
+        print("\n Cannot proceed - database connection failed")
         print("   Check that unified_server.py is running on port 5001")
     
     print("\n" + "="*60)

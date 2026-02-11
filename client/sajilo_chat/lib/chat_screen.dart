@@ -46,7 +46,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   double _fileTransferProgress = 0.0;
   bool _showFileProgress = false;
   String _transferFileName = '';
-  
+  String _transferStatus = ''; 
+  bool _isTransferring = false; 
   // History loading state
   bool _historyLoaded = false;
   
@@ -64,32 +65,54 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     super.initState();
     
     // Initialize file transfer handler
-    _fileHandler = FileTransferHandler(
+       _fileHandler = FileTransferHandler(
       onProgress: (progress) {
+        // ✅ FIX: Check if widget is still mounted before setState
+        if (!mounted) return;
+        
         setState(() {
           _fileTransferProgress = progress;
           _showFileProgress = true;
+          final percent = (progress * 100).toInt();
+          _transferStatus = 'Transferring... $percent%';
         });
       },
-      onComplete: (fileName, filePath) {
+      onComplete: (fileName, filePath, isSender) {  // ✅ FIX: Added isSender parameter
+        // ✅ FIX: Check if widget is still mounted before setState
+        if (!mounted) return;
+        
         setState(() {
           _showFileProgress = false;
-          _messages.add({
-            'from': 'System',
-            'message': 'File received: $fileName',
-            'isMe': false,
-            'isFile': true,
-            'fileName': fileName,
-            'filePath': filePath,
-          });
+          _transferStatus = '';
+          _isTransferring = false;
+          
+          // ✅ FIX: Only add "File received" message for RECEIVER
+          // For sender, the message is already added in _pickAndSendFile (lines 724-737)
+          if (!isSender) {
+            _messages.add({
+              'from': 'System',
+              'message': 'File received: $fileName',
+              'isMe': false,
+              'isFile': true,
+              'fileName': fileName,
+              'filePath': filePath,
+            });
+          }
         });
         _scrollToBottom();
         
-        if (filePath.isNotEmpty) {
+        // ✅ FIX: Only show snackbar for RECEIVER (only they have a filePath)
+        if (!isSender && filePath.isNotEmpty && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('File saved: $fileName'),
-              backgroundColor: Color(0xFF6C63FF),
+              content: Row(
+                children: [
+                  Icon(Icons.check_circle, color: Colors.white),
+                  SizedBox(width: 8),
+                  Expanded(child: Text('File saved: $fileName')),
+                ],
+              ),
+              backgroundColor: Color(0xFF26DE81),
               behavior: SnackBarBehavior.floating,
               action: SnackBarAction(
                 label: 'OPEN',
@@ -102,17 +125,34 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         }
       },
       onError: (error) {
-        setState(() => _showFileProgress = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('File transfer error: $error'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        // ✅ FIX: Check if widget is still mounted before setState
+        if (!mounted) return;
+        
+        setState(() {
+          _showFileProgress = false;
+          _transferStatus = '';
+          _isTransferring = false;
+        });
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  Icon(Icons.error, color: Colors.white),
+                  SizedBox(width: 8),
+                  Expanded(child: Text('Transfer failed: $error')),
+                ],
+              ),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
       },
     );
-    
+
     _setupListener();
     _initializeEncryption();
   }
@@ -231,68 +271,141 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     print('[ChatScreen] Requesting history from server for ${widget.chatWith}');
     widget.historyHandler.requestHistory(widget.chatWith);  }
 
+  
   void _setupListener() {
     _socketSubscription = widget.socket.stream.listen(
       (data) {
-        // CRITICAL: Check if in file transfer mode
-        if (_fileHandler.isReceivingFile) {
-          _fileHandler.handleIncomingChunk(data);
-          return;
-        }
-        
-        // Normal JSON message handling
-        _buffer += utf8.decode(data);
-        
-        while (_buffer.contains('\n')) {
-          final index = _buffer.indexOf('\n');
-          final message = _buffer.substring(0, index);
-          _buffer = _buffer.substring(index + 1);
-          
-          if (message.trim().isEmpty) continue;
-          
-          try {
-            final jsonData = jsonDecode(message);
-            final type = jsonData['type'];
-
-            // File transfer handling
-            if (type == 'file_transfer_start') {
-              setState(() => _transferFileName = jsonData['file_name']);
-              _fileHandler.handleTransferStart(jsonData);
-            } 
-            else if (type == 'file_transfer_end') {
-              _fileHandler.handleTransferEnd(jsonData);
-            }
-            // Typing indicator
-            else if (type == 'typing') {
-              final from = jsonData['from'];
-              if (from == widget.chatWith || (widget.chatWith == 'group' && from != widget.username)) {
-                _handleTypingIndicator();
-              }
-            }
-            // History handling - ENCRYPTED
-            else if (type == 'history') {
-              _handleEncryptedHistory(jsonData);
-            }
-            // Group message handling
-            else if (type == 'group' && widget.chatWith == 'group') {
-              _handleIncomingGroupMessage(jsonData);
-            } 
-            // Direct message handling - ENCRYPTED
-            else if (type == 'dm') {
-              final from = jsonData['from'];
-              final to = jsonData['to'];
-
-              if ((from == widget.username && to == widget.chatWith) ||
-                  (from == widget.chatWith)) {
-                _handleIncomingDM(jsonData);
-              }
-            }
-          } catch (e) {
-            print('[ChatScreen] Parse error: $e');
+        // Wrap everything in try-catch to prevent crashes
+        try {
+          // CRITICAL: Check if in file transfer mode
+          if (_fileHandler.isReceivingFile) {
+            _fileHandler.handleIncomingChunk(data);
+            return;
           }
+          
+          // Normal JSON message handling with safe UTF-8 decoding
+          try {
+            _buffer += utf8.decode(data, allowMalformed: true);
+          } catch (e) {
+            print('[ChatScreen] UTF-8 decode error: $e');
+            // Skip this chunk if it can't be decoded
+            return;
+          }
+          
+          while (_buffer.contains('\n')) {
+            final index = _buffer.indexOf('\n');
+            final message = _buffer.substring(0, index);
+            _buffer = _buffer.substring(index + 1);
+            
+            if (message.trim().isEmpty) continue;
+            
+            try {
+              final jsonData = jsonDecode(message);
+              final type = jsonData['type'];
+
+              // File transfer handling
+              if (type == 'file_transfer_start') {
+                // ✅ FIX: Only process if we're the intended receiver
+                final receiver = jsonData['receiver'];
+                if (receiver != widget.username) {
+                  print('[FILE] Ignoring file transfer not meant for us (intended for: $receiver)');
+                  continue;  // Skip this message
+                }
+                
+                if (mounted) {
+                  setState(() {
+                    _transferFileName = jsonData['file_name'] ?? 'Unknown';
+                    _transferStatus = 'Receiving...';
+                    _isTransferring = false; // Receiving, not sending
+                  });
+                }
+                _fileHandler.handleTransferStart(jsonData);
+              } 
+              else if (type == 'file_transfer_end') {
+                _fileHandler.handleTransferEnd(jsonData);
+              }
+              // Error handling
+              else if (type == 'error') {
+                final errorMsg = jsonData['message'] ?? 'Unknown error';
+                print('[ChatScreen] Server error: $errorMsg');
+                
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Server: $errorMsg'),
+                      backgroundColor: Colors.red,
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                  
+                  // ✅ FIX: Always reset transfer state on error
+                  setState(() {
+                    _showFileProgress = false;
+                    _isTransferring = false;
+                    _transferStatus = '';
+                    _fileTransferProgress = 0.0;
+                    _transferFileName = '';
+                  });
+                  
+                  // ✅ FIX: Reset file handler state
+                  _fileHandler.resetReceiveState();
+                }
+              }
+              // Typing indicator
+              else if (type == 'typing') {
+                final from = jsonData['from'];
+                if (from == widget.chatWith || (widget.chatWith == 'group' && from != widget.username)) {
+                  _handleTypingIndicator();
+                }
+              }
+              // History handling - ENCRYPTED
+              else if (type == 'history') {
+                _handleEncryptedHistory(jsonData);
+              }
+              // Group message handling
+              else if (type == 'group' && widget.chatWith == 'group') {
+                _handleIncomingGroupMessage(jsonData);
+              } 
+              // Direct message handling - ENCRYPTED
+              else if (type == 'dm') {
+                final from = jsonData['from'];
+                final to = jsonData['to'];
+
+                if ((from == widget.username && to == widget.chatWith) ||
+                    (from == widget.chatWith)) {
+                  _handleIncomingDM(jsonData);
+                }
+              }
+            } catch (e, stack) {
+              print('[ChatScreen] Parse error: $e');
+              print('[ChatScreen] Problematic message: ${message.substring(0, message.length > 100 ? 100 : message.length)}');
+              print('[ChatScreen] Stack: $stack');
+            }
+          }
+        } catch (e, stack) {
+          print('[ChatScreen] ❌ CRITICAL Stream error: $e');
+          print('[ChatScreen] Stack trace: $stack');
+          // Don't crash - just log and continue
         }
       },
-      cancelOnError: false,
+      onError: (error, stack) {
+        print('[ChatScreen] ❌ Socket error: $error');
+        print('[ChatScreen] Stack trace: $stack');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Connection error: $error'),
+              backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      },
+      onDone: () {
+        print('[ChatScreen] Socket closed');
+      },
+      cancelOnError: false, // ✅ CRITICAL: Don't cancel on errors
     );
   }
   
@@ -457,7 +570,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   void _scrollToBottom() {
+    if (!mounted) return;
+    
     Future.delayed(const Duration(milliseconds: 150), () {
+      if (!mounted) return;
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
@@ -547,6 +663,19 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _pickAndSendFile() async {
+    if (_isTransferring) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Please wait for the current transfer to complete'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+    
     try {
       final result = await FilePicker.platform.pickFiles();
       
@@ -560,33 +689,45 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       
       // Check file size (limit to 50MB)
       if (fileSize > 50 * 1024 * 1024) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('File too large. Maximum size is 50MB.'),
-            backgroundColor: Colors.orange,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('File too large. Maximum size is 50MB.'),
+              backgroundColor: Colors.orange,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
         return;
       }
       
       if (widget.chatWith == 'group') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('File sharing in group chat not supported yet'),
-            backgroundColor: Colors.orange,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('File sharing in group chat not supported yet'),
+              backgroundColor: Colors.orange,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
         return;
       }
       
-      setState(() {
-        _showFileProgress = true;
-        _transferFileName = fileName;
-        _fileTransferProgress = 0.0;
-      });
+      // Show starting message
+      if (mounted) {
+        setState(() {
+          _isTransferring = true;
+          _showFileProgress = true;
+          _transferFileName = fileName;
+          _fileTransferProgress = 0.0;
+          _transferStatus = 'Preparing...';
+        });
+      }
       
+      print('[FILE_SEND] Starting file transfer: $fileName');
+      
+      // Send the file
       await _fileHandler.sendFile(
         file: file,
         socket: widget.socket.socket,
@@ -594,31 +735,56 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         recipientUsername: widget.chatWith,
       );
       
-      setState(() {
-        _messages.add({
-          'from': widget.username,
-          'message': 'Sent: $fileName',
-          'isMe': true,
-          'isFile': true,
-          'fileName': fileName,
-          'filePath': '',
+      // Add to message list
+      if (mounted) {
+        setState(() {
+          _messages.add({
+            'from': widget.username,
+            'message': 'Sent: $fileName',
+            'isMe': true,
+            'isFile': true,
+            'fileName': fileName,
+            'filePath': '',
+          });
+          _transferStatus = 'Sent successfully';
+          _isTransferring = false;
         });
-      });
-      _scrollToBottom();
+        _scrollToBottom();
+        
+        // Hide progress after 2 seconds
+        Future.delayed(Duration(seconds: 2), () {
+          if (mounted) {
+            setState(() {
+              _showFileProgress = false;
+              _transferStatus = '';
+            });
+          }
+        });
+      }
       
-    } catch (e) {
-      print('[FILE] Error picking/sending file: $e');
-      setState(() => _showFileProgress = false);
+    } catch (e, stackTrace) {
+      print('[FILE] ❌ Error picking/sending file: $e');
+      print('[FILE] Stack trace: $stackTrace');
       
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to send file: $e'),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      if (mounted) {
+        setState(() {
+          _showFileProgress = false;
+          _isTransferring = false;
+          _transferStatus = '';
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to send file: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 5),
+          ),
+        );
+      }
     }
   }
+
 
   Future<void> _openFile(String filePath) async {
     try {
@@ -637,14 +803,25 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  
   @override
   void dispose() {
+    print('[ChatScreen] Disposing chat screen');
+    
+    // ✅ CRITICAL FIX: Dispose file handler FIRST to prevent callbacks
+    _fileHandler.dispose();
+    
+    // Then cleanup other resources
     _messageController.dispose();
     _scrollController.dispose();
     _socketSubscription?.cancel();
     _typingTimer?.cancel();
     _typingDebouncer?.cancel();
-    _fileHandler.dispose();
+    
+    // Reset transfer state
+    _isTransferring = false;
+    _showFileProgress = false;
+    
     super.dispose();
   }
 
@@ -738,45 +915,76 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           // File transfer progress indicator
           if (_showFileProgress)
             Container(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              color: Color(0xFFF0EFFF),
+              margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: primaryColor.withOpacity(0.1),
+                    blurRadius: 10,
+                    offset: Offset(0, 4),
+                  ),
+                ],
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation(primaryColor),
+                      Container(
+                        padding: EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: primaryColor.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          Icons.insert_drive_file_rounded,
+                          color: primaryColor,
+                          size: 24,
                         ),
                       ),
                       SizedBox(width: 12),
                       Expanded(
-                        child: Text(
-                          'Transferring: $_transferFileName',
-                          style: GoogleFonts.poppins(
-                            fontSize: 13,
-                            color: Colors.black87,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _transferFileName,
+                              style: GoogleFonts.poppins(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                                color: Colors.black87,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              _transferStatus,
+                              style: GoogleFonts.poppins(
+                                fontSize: 12,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (_isTransferring)
+                        SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation(primaryColor),
                           ),
-                          overflow: TextOverflow.ellipsis,
                         ),
-                      ),
-                      Text(
-                        '${(_fileTransferProgress * 100).toInt()}%',
-                        style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          color: primaryColor,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
                     ],
                   ),
-                  SizedBox(height: 8),
+                  SizedBox(height: 12),
                   ClipRRect(
-                    borderRadius: BorderRadius.circular(3),
+                    borderRadius: BorderRadius.circular(4),
                     child: LinearProgressIndicator(
                       value: _fileTransferProgress,
                       backgroundColor: Colors.grey[200],
@@ -787,7 +995,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 ],
               ),
             ),
-          
+
           // Messages list
           Expanded(
             child: _messages.isEmpty
