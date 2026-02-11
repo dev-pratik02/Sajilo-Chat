@@ -17,7 +17,7 @@ class ChatScreen extends StatefulWidget {
   final String username;
   final String chatWith;
   final ChatHistoryHandler historyHandler;
-  final CryptoManager cryptoManager;  // NEW: Crypto manager
+  final CryptoManager cryptoManager;  
   final String serverHost;
 
   const ChatScreen({
@@ -118,8 +118,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   /// E2EE: Initialize encryption for this chat
   Future<void> _initializeEncryption() async {
     if (widget.chatWith == 'group') {
-      // Group chat encryption not implemented in this version
-      // You could use a shared group key or pairwise encryption
       setState(() => _encryptionReady = true);
       _loadHistoryWithCache();
       return;
@@ -167,22 +165,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         // Request history after encryption is ready
         _loadHistoryWithCache();
         
-        // Show encryption ready notification
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.lock, color: Colors.white, size: 20),
-                SizedBox(width: 12),
-                Text('End-to-end encryption enabled 🔐', 
-                     style: GoogleFonts.poppins(fontSize: 13)),
-              ],
-            ),
-            backgroundColor: Color(0xFF26DE81),
-            behavior: SnackBarBehavior.floating,
-            duration: Duration(seconds: 2),
-          ),
-        );
       } else {
         throw Exception('Failed to fetch public key');
       }
@@ -233,9 +215,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   void _setupListener() {
     _socketSubscription = widget.socket.stream.listen(
       (data) {
-        // Wrap everything in try-catch to prevent crashes
+        
         try {
-          // CRITICAL: Check if in file transfer mode
+          // Check if in file transfer mode
           if (_fileHandler.isReceivingFile) {
             _fileHandler.handleIncomingChunk(data);
             return;
@@ -316,13 +298,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             }
           }
         } catch (e, stack) {
-          print('[ChatScreen] ❌ CRITICAL Stream error: $e');
+          print('[ChatScreen]  CRITICAL Stream error: $e');
           print('[ChatScreen] Stack trace: $stack');
           // Don't crash - just log and continue
         }
       },
       onError: (error, stack) {
-        print('[ChatScreen] ❌ Socket error: $error');
+        print('[ChatScreen] Socket error: $error');
         print('[ChatScreen] Stack trace: $stack');
         
         if (mounted) {
@@ -352,8 +334,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         try {
           String displayMessage;
           final msgType = msg['type'] ?? 'dm';
-          
-          //   FIX: Handle group messages specially
+        
           if (msgType == 'group' || widget.chatWith == 'group') {
             // For group messages, the plaintext is stored in 'ciphertext' field
             // (because database schema uses that field)
@@ -517,7 +498,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     });
   }
 
-  ///   FIXED: Send message with immediate UI update for group chat
+  ///  Send message with immediate UI update for group chat
   Future<void> _sendMessage() async {
     if (_messageController.text.trim().isEmpty) return;
 
@@ -526,7 +507,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
     try {
       if (widget.chatWith == 'group') {
-        //   FIX: Add message to UI immediately for sender
+        //  Add message to UI immediately for sender
         final localMessage = {
           'from': widget.username,
           'message': plaintext,
@@ -707,7 +688,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   void dispose() {
     print('[ChatScreen] Disposing chat screen');
     
-    //   CRITICAL FIX: Dispose file handler FIRST to prevent callbacks
+    //  Dispose file handler FIRST to prevent callbacks
     _fileHandler.dispose();
     
     // Then cleanup other resources
@@ -898,7 +879,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                         const SizedBox(height: 8),
                         Text(
                           isGroup ? 'Start the group conversation!' : 
-                          (_encryptionReady ? 'Your messages are encrypted 🔐' : 'Say hello!'),
+                          (_encryptionReady ? 'Your messages are encrypted ' : 'Say hello!'),
                           style: GoogleFonts.poppins(
                             fontSize: 14,
                             color: Colors.grey[400],
@@ -985,7 +966,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                         style: GoogleFonts.poppins(),
                         decoration: InputDecoration(
                           hintText: _encryptionReady && !isGroup 
-                              ? 'Type an encrypted message...' 
+                              ? 'Type a message...' 
                               : 'Type a message...',
                           hintStyle: GoogleFonts.poppins(color: Colors.grey[400]),
                           border: InputBorder.none,

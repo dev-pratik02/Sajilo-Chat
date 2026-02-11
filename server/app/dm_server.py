@@ -22,7 +22,7 @@ def get_lan_ip():
 
 IP_address = get_lan_ip()
 Port = 5050
-BufferSize = 8192  # Increased from 4096 for better throughput
+BufferSize = 8192  
 
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -49,7 +49,7 @@ except OSError as e:
 clients = {}
 clients_lock = threading.Lock()
 
-# Improved transfer management with context objects
+
 class FileTransferContext:
     """Context object for managing file transfers"""
     def __init__(self, file_id, sender, receiver, file_name, file_size):
@@ -221,9 +221,7 @@ def handle(client, username):
                             buffer = chunk[bytes_to_relay:].decode('utf-8', errors='ignore')
                         else:
                             buffer = ""
-                        
-                        # Note: End frame will be handled in JSON mode
-                        # Don't cleanup transfer here - let end frame do it
+
                     
                     continue
                     
@@ -291,7 +289,7 @@ def handle(client, username):
                                     'message': 'You already have an active file transfer'
                                 }
                                 client.send((json.dumps(error) + '\n').encode('utf-8'))
-                                print(f"[FILE_START] ❌ {username} already sending a file")
+                                print(f"[FILE_START]  {username} already sending a file")
                                 continue
                             
                             if receiver_key in active_transfers:
@@ -300,7 +298,7 @@ def handle(client, username):
                                     'message': f'{recipient} is already receiving a file'
                                 }
                                 client.send((json.dumps(error) + '\n').encode('utf-8'))
-                                print(f"[FILE_START] ❌ {recipient} already receiving a file")
+                                print(f"[FILE_START]  {recipient} already receiving a file")
                                 continue
                             
                             # Get receiver socket
@@ -311,7 +309,7 @@ def handle(client, username):
                                         'message': f'{recipient} is not online'
                                     }
                                     client.send((json.dumps(error) + '\n').encode('utf-8'))
-                                    print(f"[FILE_START] ❌ {recipient} not online")
+                                    print(f"[FILE_START] {recipient} not online")
                                     continue
                                 
                                 receiver_socket = clients[recipient]
@@ -372,13 +370,13 @@ def handle(client, username):
                                 )
                                 print(f"[FILE_END] ✓ End frame forwarded to {current_transfer.receiver}")
                             except Exception as e:
-                                print(f"[FILE_END] ❌ Failed to forward end frame: {e}")
+                                print(f"[FILE_END]  Failed to forward end frame: {e}")
                             
                             # Cleanup
                             cleanup_transfer(file_id, "completed successfully")
                             current_transfer = None
                         else:
-                            print(f"[FILE_END] ⚠️ No matching transfer for {file_id}")
+                            print(f"[FILE_END]  No matching transfer for {file_id}")
                     
                     # Handle group chat messages
                     elif message_type == 'group':

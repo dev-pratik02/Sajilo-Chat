@@ -82,7 +82,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         body: jsonEncode({
           'username': username,
           'password': password,
-          'public_key': publicKey,  // NEW: Send public key
+          'public_key': publicKey, 
         }),
       );
 
@@ -94,7 +94,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
               children: [
                 Icon(Icons.check_circle, color: Colors.white),
                 SizedBox(width: 12),
-                Text('Registration successful! 🔐 E2EE enabled', 
+                Text('Registration successful!  E2EE enabled', 
                      style: GoogleFonts.poppins()),
               ],
             ),
@@ -178,7 +178,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         print('[E2EE] Public key uploaded successfully');
       } catch (e) {
         print('[E2EE] Warning: Failed to upload public key: $e');
-        // Continue anyway - key might already exist
       }
 
       // Connect to socket server
@@ -224,7 +223,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                     serverHost: host,
                     serverPort: port,
                     accessToken: accessToken,
-                    cryptoManager: _cryptoManager,  // NEW: Pass crypto manager
+                    cryptoManager: _cryptoManager, 
                   ),
                   transitionsBuilder: (context, animation, secondaryAnimation, child) {
                     return FadeTransition(opacity: animation, child: child);
@@ -234,7 +233,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
               );
             }
           } catch (e) {
-            debugPrint('⚠️ JSON decode error: $e\nData: $line');
+            debugPrint('JSON decode error: $e\nData: $line');
           }
         }
       });
@@ -333,7 +332,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                             ],
                           ),
                           child: Icon(
-                            Icons.lock_rounded,  // Changed to lock icon for E2EE
+                            Icons.message_rounded,  
                             size: 60,
                             color: Color(0xFF6C63FF),
                           ),
@@ -362,7 +361,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.security, color: Colors.white, size: 16),
                             SizedBox(width: 6),
                             Text(
                               'End-to-End Encrypted',
@@ -496,7 +494,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                         Padding(
                           padding: const EdgeInsets.only(top: 8),
                           child: Text(
-                            'Generating encryption keys 🔐',
+                            'Generating encryption keys ',
                             style: GoogleFonts.poppins(
                               color: Colors.grey[600],
                               fontSize: 12,
