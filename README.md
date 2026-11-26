@@ -2,7 +2,7 @@
 
 A LAN chat application with a **Flutter** client and a **Python** backend. It offers end-to-end encrypted direct messages, a shared group chat and direct file transfer.
 
-> **Project status:** built for learning and demonstration on a trusted local network. Read [Security notes](#security-notes) before using it for anything sensitive.
+> **Project status:** built for learning and demonstration on a trusted local network. 
 
 ## Features
 
